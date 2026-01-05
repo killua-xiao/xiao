@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { GameCanvas } from './components/GameCanvas';
 import { GameStatus, GameState } from './types';
 import { levels } from './levels';
-import { Heart, Coins, Trophy, Skull, Star, Trees, Zap, Sparkles, Crown, Mountain, Home } from 'lucide-react';
+import { Heart, Coins, Trophy, Skull, Star, Trees, Zap, Sparkles, Crown, Mountain, Home, Play, Map, Gamepad2, Move, Target, ArrowUpFromLine } from 'lucide-react';
 import { MAX_HEALTH, REVIVE_COST } from './constants';
 import { audio } from './audio';
 
@@ -287,7 +287,7 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-zinc-900 flex flex-col items-center justify-center p-4 font-sans select-none text-white">
       
       {/* Header / HUD */}
-      <div className="w-full max-w-[800px] flex justify-between items-center mb-4 px-4 py-2 bg-zinc-800 rounded-xl border-2 border-zinc-700 shadow-lg">
+      <div className="w-full max-w-[800px] flex justify-between items-center mb-4 px-4 py-2 bg-zinc-800/80 backdrop-blur rounded-xl border-2 border-zinc-700 shadow-lg z-30">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1 text-red-400">
             {/* Dynamic Heart Rendering */}
@@ -304,8 +304,10 @@ const App: React.FC = () => {
           </div>
         </div>
         
-        <div className="text-center">
-            <h1 className="text-sm text-gray-400 uppercase tracking-widest font-bold">{currentLevel?.name || "ADVENTURE"}</h1>
+        <div className="flex flex-col items-center">
+            {/* Bilingual Level Name */}
+            <span className="text-[10px] md:text-xs text-gray-400 font-bold tracking-widest uppercase">{currentLevel?.name || "ADVENTURE"}</span>
+            <span className="text-xs md:text-sm text-yellow-400 pixel-font tracking-wide">{currentLevel?.nameCn || "冒险模式"}</span>
         </div>
 
         <div className="flex flex-col items-end">
@@ -346,41 +348,93 @@ const App: React.FC = () => {
             <CinematicView scenes={HIDDEN_OUTRO_SCENES} onComplete={handleCinematicComplete} />
         )}
 
-        {/* MENU */}
+        {/* MENU - REDESIGNED */}
         {gameState.status === GameStatus.MENU && (
-          <div className="absolute inset-0 bg-black flex flex-col items-center justify-center text-center z-10 bg-[url('https://images.unsplash.com/photo-1542831371-29b0f74f9713?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center">
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
-            <div className="relative z-20">
-                <h1 className="pixel-font text-4xl md:text-6xl text-yellow-400 mb-2 drop-shadow-[0_4px_0_rgba(180,83,9,1)]">
-                小熊大冒险
-                </h1>
-                <p className="text-gray-200 mb-8 max-w-md mx-auto font-bold">帮助小熊收集金币，躲避愤怒的方块！</p>
+          <div className="absolute inset-0 flex flex-col justify-between items-center z-10 bg-[url('https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=2670&auto=format&fit=crop')] bg-cover bg-center overflow-hidden">
+            {/* Clean Dark Overlay */}
+            <div className="absolute inset-0 bg-black/20 pointer-events-none"></div>
+            
+            {/* Subtle Texture */}
+            <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] pointer-events-none"></div>
+
+            {/* --- TOP SECTION: TITLE LOGO --- */}
+            <div className="relative z-20 mt-16 flex flex-col items-center">
+                <div className="relative group cursor-default">
+                    {/* Main Title - Clean, Bold, International Style */}
+                    <h1 className="pixel-font text-6xl md:text-8xl font-black text-white drop-shadow-[0_6px_0_rgba(0,0,0,1)] tracking-tighter">
+                        小熊大冒险
+                    </h1>
+                    {/* Subtitle */}
+                    <div className="mt-4 text-center">
+                        <span className="pixel-font text-[10px] md:text-xs text-yellow-300 tracking-[0.6em] font-bold uppercase drop-shadow-md">
+                            Little Bear's Adventure
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- MIDDLE SECTION: SPACER --- */}
+            <div className="flex-grow"></div>
+
+            {/* --- BOTTOM SECTION: ACTIONS --- */}
+            <div className="relative z-20 w-full max-w-md px-6 pb-8 flex flex-col items-center gap-6">
                 
-                <div className="flex flex-col gap-4 items-center">
-                    <button 
+                {/* Main Play Button */}
+                <button 
                     onClick={() => startGame(1)}
-                    className="bg-green-500 hover:bg-green-400 text-white border-b-4 border-green-700 font-bold py-3 px-8 rounded-lg transform active:translate-y-1 active:border-b-0 transition-all pixel-font text-lg shadow-lg"
-                    >
-                    开始冒险
-                    </button>
+                    className="group relative w-full max-w-[280px] h-16 transition-all hover:scale-105 active:scale-95"
+                >
+                    {/* Button Shadow */}
+                    <div className="absolute inset-0 bg-yellow-700 rounded-full translate-y-1"></div>
+                    {/* Button Face */}
+                    <div className="relative h-full bg-gradient-to-r from-yellow-400 to-yellow-500 rounded-full border-2 border-yellow-300 flex items-center justify-center gap-3 shadow-xl">
+                        <Play className="w-6 h-6 text-yellow-900 fill-current" />
+                        <span className="pixel-font text-2xl text-yellow-900 tracking-widest font-bold">开始游戏</span>
+                    </div>
+                </button>
+
+                {/* Level Selection Panel */}
+                <div className="w-full bg-black/70 backdrop-blur-sm p-4 rounded-xl border border-white/10 shadow-2xl">
+                    <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
+                        <div className="flex items-center gap-2 text-gray-300">
+                            <Map className="w-4 h-4 text-yellow-500" />
+                            <span className="text-xs font-bold">章节选择</span>
+                        </div>
+                        <span className="text-[10px] text-gray-500">SELECT CHAPTER</span>
+                    </div>
                     
-                    <div className="mt-8 bg-black/60 p-4 rounded-lg border border-white/10">
-                    <p className="text-sm text-gray-400 mb-2">或者选择关卡练习:</p>
-                    <div className="flex gap-2 flex-wrap justify-center max-w-md">
+                    <div className="grid grid-cols-4 gap-3">
                         {levels.filter(l => l.id !== 999).map((level) => (
                         <button 
                             key={level.id}
                             onClick={() => startGame(level.id)}
-                            className="bg-zinc-700 hover:bg-zinc-600 text-white border-b-2 border-zinc-900 py-1 px-3 rounded text-xs pixel-font"
+                            className="group relative h-10 overflow-hidden rounded bg-white/10 hover:bg-yellow-500 hover:text-black border border-white/20 transition-all flex items-center justify-center"
                         >
-                            {level.id}
+                            <span className="pixel-font text-sm font-bold group-hover:scale-110 transition-transform">{level.id}</span>
                         </button>
                         ))}
-                    </div>
+                        
+                        {/* Hidden Level Hint Placeholder */}
+                        <div className="h-10 rounded border-2 border-dashed border-white/10 flex items-center justify-center cursor-not-allowed group" title="???">
+                            <span className="pixel-font text-xs text-white/20 group-hover:text-white/40 transition-colors">?</span>
+                        </div>
                     </div>
                 </div>
-                <div className="mt-8 text-xs text-gray-400 bg-black/80 p-2 rounded inline-block">
-                    <p>操作说明: 方向键移动 | SPACE 跳跃 | F 射击</p>
+                
+                {/* Footer Controls Info - CHINESE */}
+                <div className="flex gap-4 text-[10px] text-gray-300 font-bold bg-black/60 px-4 py-2 rounded-full border border-white/10 backdrop-blur-md">
+                    <div className="flex items-center gap-1">
+                        <Move className="w-3 h-3 text-yellow-400" /> 
+                        <span>移动: 方向键</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <ArrowUpFromLine className="w-3 h-3 text-green-400" />
+                        <span>跳跃: 空格</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <Target className="w-3 h-3 text-red-400" />
+                        <span>攻击: F</span>
+                    </div>
                 </div>
             </div>
           </div>

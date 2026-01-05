@@ -50,7 +50,7 @@ export const COLORS = {
   sea: '#082F49',     
   tomb: '#271503',    
   spaceBg: '#020617', 
-  arcticBg: '#F0F9FF',
+  arcticBg: '#1E293B', // 修改为深色板岩蓝，防止隐藏关过亮
   
   // 地形
   ground: '#65A30D', // 草地绿

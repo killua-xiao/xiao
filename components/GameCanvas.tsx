@@ -954,8 +954,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         bgGradient.addColorStop(0, '#334155'); // Slate
         bgGradient.addColorStop(1, '#475569');
     } else if (isArcticLevel) {
-        bgGradient.addColorStop(0, '#E0F2FE');
-        bgGradient.addColorStop(1, '#FFFFFF');
+        // 极地暮光/极光氛围 (Polar Twilight) - 修改此处以修复白屏问题
+        bgGradient.addColorStop(0, '#0F172A'); // Dark Slate
+        bgGradient.addColorStop(0.5, '#1E3A8A'); // Dark Blue
+        bgGradient.addColorStop(1, '#60A5FA'); // Light Blue Horizon
     } else {
         bgGradient.addColorStop(0, levelRef.current.backgroundColor);
         bgGradient.addColorStop(1, levelRef.current.backgroundColor);

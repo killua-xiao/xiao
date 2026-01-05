@@ -91,7 +91,8 @@ export interface Player extends Entity {
 // 关卡数据结构
 export interface LevelData {
   id: number;
-  name: string;
+  name: string;         // 英文名称
+  nameCn: string;       // 中文名称 (新增)
   width: number;        // 关卡总宽度
   height: number;       // 关卡高度
   entities: Entity[];   // 包含的所有实体

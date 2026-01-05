@@ -130,7 +130,8 @@ const createPassengerCar = (startX: number, length: number, idPrefix: string) =>
 export const levels: LevelData[] = [
   {
     id: 1,
-    name: "Green Valley 1-1",
+    name: "Green Valley",
+    nameCn: "绿野仙踪 1-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.sky,
@@ -175,7 +176,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 2,
-    name: "Dark Cave 2-1",
+    name: "Dark Cave",
+    nameCn: "幽暗洞穴 2-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.caveBg,
@@ -221,7 +223,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 3,
-    name: "Stormy Keep 3-1",
+    name: "Stormy Keep",
+    nameCn: "风暴堡垒 3-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: '#2D1B2E', 
@@ -272,7 +275,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 4,
-    name: "Deep Blue 4-1",
+    name: "Deep Blue",
+    nameCn: "深海探险 4-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.sea,
@@ -323,7 +327,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 5,
-    name: "Lost Tomb 5-1",
+    name: "Lost Tomb",
+    nameCn: "失落古墓 5-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.tomb,
@@ -372,7 +377,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 6,
-    name: "Daylight Express 6-1",
+    name: "Daylight Express",
+    nameCn: "黎明列车 6-1",
     width: 6000, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.sky,
@@ -418,7 +424,8 @@ export const levels: LevelData[] = [
   },
   {
     id: 7,
-    name: "Cosmic Voyage 7-1",
+    name: "Cosmic Voyage",
+    nameCn: "星际漫游 7-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
     backgroundColor: COLORS.spaceBg,
@@ -470,6 +477,7 @@ export const levels: LevelData[] = [
   {
       id: 999,
       name: "Way Home",
+      nameCn: "归途 999",
       width: 4000, 
       height: CANVAS_HEIGHT,
       backgroundColor: COLORS.arcticBg,

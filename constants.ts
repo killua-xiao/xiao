@@ -42,93 +42,102 @@ export const PLAYER_HEIGHT = 30;
 export const MAX_HEALTH = 3;    // 初始最大生命值
 export const REVIVE_COST = 1;   // 复活所需金币
 
-// --- 颜色配置表 (Palette) ---
+// --- 颜色配置表 (Palette - Updated for Realism) ---
 export const COLORS = {
-  // 背景色
-  sky: '#87CEEB',
-  skyDark: '#1E3A8A', // 夜晚
-  sea: '#006994',     // 深海
-  tomb: '#422006',    // 古墓
-  spaceBg: '#020617', // 太空
-  arcticBg: '#E0F2FE',// 北极（隐藏关）
+  // 背景色 (会被渐变替代，作为Fallback)
+  sky: '#38BDF8', // 更自然的蓝
+  skyDark: '#0F172A',
+  sea: '#082F49',     
+  tomb: '#271503',    
+  spaceBg: '#020617', 
+  arcticBg: '#F0F9FF',
   
   // 地形
-  ground: '#4ADE80',
-  groundDark: '#14532D',
-  rock: '#64748B',
+  ground: '#65A30D', // 草地绿
+  groundTop: '#84CC16', // 草地亮面
+  groundDark: '#3F6212', // 泥土暗部
+  rock: '#475569',
   sand: '#D97706',
-  sandWall: '#FCD34D',
-  asteroid: '#475569',
-  ice: '#BAE6FD',
+  sandWall: '#F59E0B',
+  asteroid: '#334155',
+  ice: '#E0F2FE',
 
   // 场景元素
-  caveBg: '#171717',
-  caveGround: '#404040',
-  caveGroundDark: '#262626',
-  caveSpike: '#737373',
+  caveBg: '#0A0A0A',
+  caveGround: '#262626',
+  caveGroundDark: '#171717',
+  caveSpike: '#525252',
   
   // 火车关卡
   trainBg: '#0F172A', 
-  trainCar: '#475569', 
-  trainWindow: '#FEF08A', 
-  trainWheel: '#1E293B', 
+  trainCarBody: '#F1F5F9', // 更有质感的白
+  trainCarStripe: '#2563EB', 
+  trainWindow: '#60A5FA', 
+  trainWheel: '#0F172A', 
+  trainConnector: '#1E293B',
 
   // 角色相关
-  dirt: '#854D0E',
-  bear: '#FFFFFF',      // 北极熊白
-  bearFace: '#FCD34D',  // 脸部颜色
-  bearFaceDrunk: '#EF4444', // 醉酒脸红
-  ninjaBody: '#111827', // 忍者装
-  ninjaSash: '#DC2626', // 忍者红带
-  astroSuit: '#E2E8F0', // 太空服
-  astroVisor: '#38BDF8',// 面罩
+  dirt: '#713F12',
+  bear: '#F8FAFC',      
+  bearFace: '#FDE047',  
+  bearFaceDrunk: '#EF4444', 
+  ninjaBody: '#111827', 
+  ninjaSash: '#DC2626', 
+  astroSuit: '#E2E8F0', 
+  astroVisor: '#0EA5E9',
   
   // 武器与特效
-  tail: '#22D3EE',      // 人鱼尾巴
-  gun: '#4B5563', 
-  shovel: '#A3A3A3', 
+  tail: '#06B6D4',      
+  gun: '#374151', 
+  shovel: '#94A3B8', 
   shovelHandle: '#78350F',
   shuriken: '#E2E8F0', 
   laserGun: '#10B981', 
-  laserBeam: '#F472B6', 
-  projectile: '#FFF', 
+  laserBeam: '#F43F5E', 
+  projectile: '#FFFFFF', 
   coin: '#FACC15',
   coinShine: '#FEF08A',
-  wine: '#9333EA', 
+  wine: '#7E22CE', 
   wineLabel: '#F3E8FF',
   potion: '#EF4444', 
-  trophy: '#FBBF24', 
+  trophy: '#F59E0B', 
   trophyBase: '#78350F',
-  meteor: '#64748B', 
+  meteor: '#475569', 
   
   // 敌人颜色定义
-  enemy: '#DC2626',      // 红色 (普通)
-  enemyTank: '#7C3AED',  // 紫色 (坦克)
-  enemyFast: '#EA580C',  // 橙色 (快速)
-  enemyBat: '#4C1D95',   // 深紫 (蝙蝠)
-  enemySlime: '#10B981', // 绿色 (史莱姆)
-  enemyFish: '#F97316',  // 橙鱼
-  enemySkeleton: '#E5E5E5', // 骷髅白
-  enemyMummy: '#FDE68A', // 木乃伊黄
-  enemySpider: '#171717', // 蜘蛛黑
-  enemyZombie: '#65A30D', // 僵尸绿
-  enemyBird: '#E2E8F0',   // 鸟灰
-  enemyAlien: '#84CC16',  // 外星绿
-  enemyUfo: '#94A3B8',    // UFO灰
-  ufoLight: '#38BDF8',    // UFO光
-  spiderEye: '#DC2626',   // 蜘蛛眼
+  enemy: '#DC2626',      
+  enemyTank: '#6D28D9',  
+  enemyFast: '#EA580C',  
+  enemyBat: '#4C1D95',   
+  enemySlime: '#059669', 
+  enemyFish: '#F97316',  
+  enemySkeleton: '#E2E8F0', 
+  enemyMummy: '#FEF3C7', 
+  enemySpider: '#0F172A', 
+  enemyZombie: '#4D7C0F', 
+  enemyBird: '#CBD5E1',   
+  enemyAlien: '#65A30D',  
+  enemyUfo: '#64748B',    
+  ufoLight: '#38BDF8',    
+  spiderEye: '#DC2626',   
   
   // 危险与交互物
-  spike: '#999999',
-  lava: '#EF4444',
+  spike: '#737373',
+  lava: '#DC2626',
   lavaSurface: '#FCA5A5',
-  flagPole: '#D1D5DB',
-  flag: '#DC2626',
-  gateDark: '#374151',
+  flagPole: '#9CA3AF',
+  flag: '#EF4444',
+  gateDark: '#1F2937',
   gateLight: '#9CA3AF',
 
-  // 装饰性星球
+  // 装饰性
+  flowerPetal: '#F9A8D4',
+  flowerCenter: '#FDE047',
   planetRed: '#EF4444',
   planetBlue: '#3B82F6',
-  planetRing: '#FCD34D'
+  planetRing: '#FDE047',
+  earthWater: '#1D4ED8',
+  earthLand: '#15803D',
+  stationPillar: '#475569',
+  stationRoof: '#1E293B'
 };

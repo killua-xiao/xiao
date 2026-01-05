@@ -26,9 +26,10 @@ interface GameCanvasProps {
 interface Cloud { x: number; y: number; speed: number; size: number; }
 interface Tree { x: number; y: number; width: number; height: number; color: string; }
 interface Planet { x: number; y: number; size: number; color: string; hasRing: boolean; speed: number; }
+interface CaveSpike { x: number; height: number; type: 'CEILING' | 'FLOOR'; width: number; } // 洞穴钟乳石
 interface Particle { 
     x: number; y: number; speedX: number; speedY: number; 
-    size: number; life: number; color?: string; 
+    size: number; life: number; color?: string; alpha?: number;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setGameState, onLevelComplete, onPlayerHit, onGameOver }) => {
@@ -59,13 +60,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
   const entitiesRef = useRef<Entity[]>(JSON.parse(JSON.stringify(levelRef.current.entities)));
   const bulletsRef = useRef<Entity[]>([]); // 活跃子弹列表
-  const cameraRef = useRef({ x: 0, y: 0, shake: 0 }); // 摄像机与屏幕震动
+  const cameraRef = useRef({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); // 摄像机与屏幕震动，增加前瞻偏移缓存
   const keysRef = useRef<{ [key: string]: boolean }>({}); // 按键状态
+  const timeRef = useRef<number>(0); // 全局时间变量，用于动画
 
   // --- 环境与装饰 Refs ---
   const cloudsRef = useRef<Cloud[]>([]);
   const treesRef = useRef<Tree[]>([]);
   const planetsRef = useRef<Planet[]>([]);
+  const caveSpikesRef = useRef<CaveSpike[]>([]); // 洞穴背景
   const particlesRef = useRef<Particle[]>([]);
 
   // --- 初始化环境装饰 (Mount时执行) ---
@@ -78,13 +81,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       size: 30 + Math.random() * 40
     }));
 
-    // 生成火车关卡的树木
-    treesRef.current = Array.from({ length: 15 }).map((_, i) => ({
-       x: i * (CANVAS_WIDTH / 3) + Math.random() * 100,
+    // 生成火车关卡的树木/电线杆
+    // 初始生成时让它们分布在屏幕内外，形成初始视觉
+    treesRef.current = Array.from({ length: 10 }).map((_, i) => ({
+       x: i * (CANVAS_WIDTH / 2) + Math.random() * 200,
        y: CANVAS_HEIGHT - 50, 
-       width: 40 + Math.random() * 40,
+       width: 20 + Math.random() * 10,
        height: 100 + Math.random() * 150,
-       color: Math.random() > 0.5 ? '#166534' : '#14532D'
+       color: '#171717' // 电线杆色
     }));
 
     // 生成太空关卡的星球
@@ -97,6 +101,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        hasRing: Math.random() > 0.5,
        speed: 0.05 + Math.random() * 0.2
     }));
+
+    // 生成洞穴关卡的钟乳石背景
+    caveSpikesRef.current = [];
+    for(let i=0; i<40; i++) {
+        caveSpikesRef.current.push({
+            x: Math.random() * CANVAS_WIDTH * 2, // 初始分布，后面会循环移动
+            height: 50 + Math.random() * 200,
+            width: 30 + Math.random() * 50,
+            type: Math.random() > 0.5 ? 'CEILING' : 'FLOOR'
+        });
+    }
+
   }, []);
 
   // --- 关卡切换逻辑 ---
@@ -125,7 +141,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     };
     cameraRef.current.x = 0;
     cameraRef.current.shake = 0;
+    cameraRef.current.lookAheadOffset = 0;
     particlesRef.current = []; 
+    timeRef.current = 0;
     
     // 播放对应关卡BGM
     let bgmType: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' = 'NORMAL';
@@ -287,31 +305,41 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   const updateEnvironment = () => {
     const player = playerRef.current;
     const weather = levelRef.current.weather;
+    timeRef.current += 1;
 
     // 1. 动态背景元素 (云朵/树木/星球)
     if (weather === 'TRAIN') {
+        // 列车关卡特殊逻辑：背景需要飞速向左移动，模拟列车向右高速行驶
+        const trainSpeed = 6; // 降低速度，原先12太快
+
         cloudsRef.current.forEach(cloud => {
-            cloud.x -= cloud.speed * 3;
+            cloud.x -= cloud.speed * 2 + trainSpeed * 0.2; // 远景慢
             if (cloud.x + cloud.size * 2 < 0) {
                 cloud.x = CANVAS_WIDTH * 2 + Math.random() * 200;
                 cloud.y = Math.random() * (CANVAS_HEIGHT / 2);
             }
         });
+        
+        // 优化树木/电线杆生成逻辑，防止凭空出现
         treesRef.current.forEach(tree => {
-             tree.x -= 5;
+             tree.x -= trainSpeed; // 近景快
+             // 当完全移出左侧屏幕时，移动到右侧屏幕外
              if (tree.x + tree.width < -100) {
-                 tree.x = CANVAS_WIDTH + 100 + Math.random() * 300;
+                 // 找到当前最右边的树，接在它后面，保持间距
+                 const rightMostX = Math.max(...treesRef.current.map(t => t.x), CANVAS_WIDTH);
+                 tree.x = rightMostX + 300 + Math.random() * 400; // 间距大一些
                  tree.height = 100 + Math.random() * 150;
                  tree.y = CANVAS_HEIGHT - 30; 
              }
         });
+        
         // 火车速度线粒子
-        if (particlesRef.current.length < 50) {
+        if (particlesRef.current.length < 30) { // 减少粒子数量减轻视觉干扰
             const spawnX = cameraRef.current.x + CANVAS_WIDTH + Math.random() * 100;
             particlesRef.current.push({
                 x: spawnX, y: Math.random() * CANVAS_HEIGHT,
-                speedX: -10 - Math.random() * 5, speedY: 0,
-                size: 1 + Math.random() * 2, life: 0.5, color: 'rgba(255, 255, 255, 0.2)'
+                speedX: -15 - Math.random() * 10, speedY: 0,
+                size: 1 + Math.random() * 2, life: 0.5, color: 'rgba(255, 255, 255, 0.4)'
             });
         }
     }
@@ -325,7 +353,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              }
         });
     }
-    else if (weather !== 'CAVE' && weather !== 'SEA' && weather !== 'TOMB') {
+    else if (weather === 'CAVE') {
+        // 洞穴钟乳石视差
+        caveSpikesRef.current.forEach((spike, i) => {
+             // 简单的循环逻辑
+             const parallaxSpeed = 0.5 + (i % 3) * 0.2;
+             spike.x -= parallaxSpeed;
+             if (spike.x + spike.width < -100) {
+                 spike.x = CANVAS_WIDTH * 2 + Math.random() * 100;
+             }
+        });
+    }
+    else if (weather !== 'SEA' && weather !== 'TOMB') {
         cloudsRef.current.forEach(cloud => {
             cloud.x -= cloud.speed;
             if (cloud.x + cloud.size * 2 < 0) {
@@ -352,7 +391,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             particlesRef.current.push({
                 x: spawnX, y: -10,
                 speedX: (Math.random() - 0.5) * 1, speedY: 1 + Math.random() * 2,
-                size: 2 + Math.random() * 3, life: 1, color: '#FFFFFF'
+                size: 2 + Math.random() * 3, life: 1, color: '#FFFFFF',
+                alpha: 0.8
             });
         }
     }
@@ -363,7 +403,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              x: spawnX, y: -10,
              speedX: weather === 'RAIN' ? -1 : Math.sin(Date.now() / 1000), 
              speedY: weather === 'RAIN' ? 8 + Math.random() * 4 : 1 + Math.random(), 
-             size: weather === 'RAIN' ? 2 : 3 + Math.random() * 2, life: 1
+             size: weather === 'RAIN' ? 2 : 3 + Math.random() * 2, life: 1,
+             color: '#A7F3D0', alpha: 0.5
           });
        }
     }
@@ -501,6 +542,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                         setGameState(prev => ({ ...prev, score: prev.score + bonus }));
                         audio.playKill();
                         addShake(10);
+                        
+                        // 爆炸粒子
+                        for (let k = 0; k < 8; k++) {
+                            particlesRef.current.push({
+                                x: ent.pos.x + ent.size.x/2, y: ent.pos.y + ent.size.y/2,
+                                speedX: (Math.random() - 0.5) * 8, speedY: (Math.random() - 0.5) * 8,
+                                size: 4, life: 0.5, color: '#F87171'
+                            });
+                        }
+
                     } else {
                         // 击退效果
                         ent.pos.x += b.vel.x > 0 ? 5 : -5;
@@ -512,6 +563,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             } else if (ent.type === EntityType.PLATFORM) {
                 if (checkCollision(b, ent)) {
                     bulletHit = true; // 打墙销毁
+                    // 撞墙粒子
+                    particlesRef.current.push({
+                        x: b.pos.x, y: b.pos.y, speedX: -b.vel.x * 0.2, speedY: (Math.random()-0.5)*4,
+                        size: 2, life: 0.3, color: '#FFF'
+                    });
                     break;
                 }
             } else if (ent.type === EntityType.BREAKABLE_WALL) {
@@ -599,6 +655,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.coyoteTimer = 0; // 消耗土狼时间
             player.jumpBufferTimer = 0; // 消耗输入缓存
             audio.playJump();
+            // 跳跃尘土
+            for(let k=0; k<3; k++) {
+                particlesRef.current.push({
+                    x: player.pos.x + player.size.x/2, y: player.pos.y + player.size.y,
+                    speedX: (Math.random()-0.5)*2, speedY: 0,
+                    size: 2 + Math.random()*2, life: 0.3, color: '#E5E7EB'
+                });
+            }
         }
 
         // 大小跳 (松开跳跃键减速上升)
@@ -649,6 +713,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.pos.y = ent.pos.y - player.size.y;
             player.vel.y = 0;
             landed = true;
+            // 落地瞬间效果
+            if (!player.isGrounded) { 
+                // 只在刚落地的那一帧触发
+            }
           } else if (player.vel.y < 0) { // 上升碰到天花板
             player.pos.y = ent.pos.y + ent.size.y;
             player.vel.y = 0;
@@ -824,9 +892,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     });
 
     // --- 摄像机跟随 (Camera Follow) ---
-    const lookAhead = player.facingRight ? 100 : -50; // 前瞻机制：看向前方
-    const targetCamX = player.pos.x - CANVAS_WIDTH / 3 + lookAhead;
-    cameraRef.current.x += (targetCamX - cameraRef.current.x) * 0.05; // 平滑插值 (Lerp)
+    // 优化：前瞻移动增加平滑插值，防止转身时摄像机瞬间跳跃导致的视觉撕裂（怪物倒退错觉）
+    const targetLookAhead = player.facingRight ? 100 : -50;
+    cameraRef.current.lookAheadOffset += (targetLookAhead - cameraRef.current.lookAheadOffset) * 0.05;
+    
+    const targetCamX = player.pos.x - CANVAS_WIDTH / 3 + cameraRef.current.lookAheadOffset;
+    cameraRef.current.x += (targetCamX - cameraRef.current.x) * 0.05; // 摄像机主体移动平滑
     
     // 摄像机边界限制
     if (cameraRef.current.x < 0) cameraRef.current.x = 0;
@@ -866,15 +937,54 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const isShurikenLevel = levelId === 6;
     const isLaserLevel = isSpaceLevel; 
 
-    // 1. 绘制背景
-    ctx.fillStyle = levelRef.current.backgroundColor;
+    // === 1. 绘制背景 (Background & Sky) ===
+    
+    // 使用渐变替代纯色背景
+    let bgGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+    if (isSpaceLevel || weather === 'CAVE' || isTrainLevel) {
+        bgGradient.addColorStop(0, '#000000');
+        bgGradient.addColorStop(1, '#111827');
+    } else if (isSeaLevel) {
+        bgGradient.addColorStop(0, '#0C4A6E'); // Deep Blue
+        bgGradient.addColorStop(1, '#0284C7'); // Lighter Blue
+    } else if (weather === 'SUNNY') {
+        bgGradient.addColorStop(0, '#38BDF8'); // Sky Blue
+        bgGradient.addColorStop(1, '#BAE6FD'); // Light Blue
+    } else if (weather === 'RAIN') {
+        bgGradient.addColorStop(0, '#334155'); // Slate
+        bgGradient.addColorStop(1, '#475569');
+    } else if (isArcticLevel) {
+        bgGradient.addColorStop(0, '#E0F2FE');
+        bgGradient.addColorStop(1, '#FFFFFF');
+    } else {
+        bgGradient.addColorStop(0, levelRef.current.backgroundColor);
+        bgGradient.addColorStop(1, levelRef.current.backgroundColor);
+    }
+    
+    ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // 震动偏移应用
     const shakeX = (Math.random() - 0.5) * cameraRef.current.shake;
     const shakeY = (Math.random() - 0.5) * cameraRef.current.shake;
 
-    // 2. 绘制远景 (Stars/Clouds/Planets)
+    // === 2. 绘制远景视差 (Parallax) ===
+    if (!isSpaceLevel && !isSeaLevel && weather !== 'CAVE') {
+        // 远山 / 城市剪影
+        ctx.fillStyle = weather === 'TRAIN' ? '#1E293B' : 'rgba(255, 255, 255, 0.3)';
+        ctx.beginPath();
+        ctx.moveTo(0, CANVAS_HEIGHT);
+        for(let i=0; i<=CANVAS_WIDTH; i+=10) {
+            const parallaxX = (i + cameraX * 0.1) % (CANVAS_WIDTH * 2); // 视差位移
+            // 使用正弦波生成连绵山脉
+            const height = 100 + Math.sin(i * 0.01) * 30 + Math.sin(i * 0.03) * 10;
+            ctx.lineTo(i, CANVAS_HEIGHT - height);
+        }
+        ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fill();
+    }
+
+    // 太空/洞穴/普通背景元素
     if (isSpaceLevel) {
         // 绘制星星
         ctx.fillStyle = '#FFF';
@@ -910,19 +1020,44 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
     }
 
+    // 绘制洞穴背景 (Cave Spikes Background)
+    if (weather === 'CAVE') {
+        ctx.fillStyle = '#262626'; // Darker than ground, lighter than bg
+        caveSpikesRef.current.forEach((spike, i) => {
+             const parallaxX = spike.x - (cameraX * 0.2); 
+             const renderX = ((parallaxX % (CANVAS_WIDTH * 2)) + (CANVAS_WIDTH * 2)) % (CANVAS_WIDTH * 2) - 100;
+             
+             ctx.beginPath();
+             if (spike.type === 'CEILING') {
+                 ctx.moveTo(renderX, 0);
+                 ctx.lineTo(renderX + spike.width / 2, spike.height);
+                 ctx.lineTo(renderX + spike.width, 0);
+             } else {
+                 ctx.moveTo(renderX, CANVAS_HEIGHT);
+                 ctx.lineTo(renderX + spike.width / 2, CANVAS_HEIGHT - spike.height);
+                 ctx.lineTo(renderX + spike.width, CANVAS_HEIGHT);
+             }
+             ctx.fill();
+        });
+    }
+
     // 普通背景 (云与树)
     if (weather !== 'CAVE' && weather !== 'SEA' && weather !== 'TOMB' && weather !== 'SPACE') {
         if (isTrainLevel) {
+            // 在列车关卡，树是电线杆或远景树，快速后退
             treesRef.current.forEach(tree => {
-                ctx.fillStyle = tree.color;
-                ctx.beginPath();
-                ctx.moveTo(tree.x + tree.width/2, tree.y - tree.height);
-                ctx.lineTo(tree.x + tree.width, tree.y);
-                ctx.lineTo(tree.x, tree.y);
-                ctx.fill();
+                const renderX = tree.x - cameraX; // 直接渲染，因为trees在updateEnvironment中已经模拟了高速运动
+                
+                // 电线杆风格
+                ctx.fillStyle = '#171717';
+                ctx.fillRect(renderX, tree.y - tree.height, 10, tree.height);
+                // 横臂
+                ctx.fillRect(renderX - 10, tree.y - tree.height + 10, 30, 4);
+                
+                // 如果tree超出左屏幕太远，不需要重置逻辑在这里，逻辑在updateEnvironment
             });
         }
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'; // 降低不透明度，更柔和
         cloudsRef.current.forEach(cloud => {
             const parallaxX = cloud.x - (cameraX * 0.2); 
             const renderX = ((parallaxX % (CANVAS_WIDTH * 2)) + (CANVAS_WIDTH * 2)) % (CANVAS_WIDTH * 2) - 200;
@@ -937,13 +1072,203 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.save();
     ctx.translate(-cameraX + shakeX, shakeY); // 应用摄像机变换
 
-    // 3. 绘制实体 (Entities)
+    // === 3. 绘制阴影 (Shadows Pass) ===
+    // 先绘制所有实体阴影，确保在物体下方
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    entitiesRef.current.forEach(ent => {
+        if (ent.isDead) return;
+        if (ent.type === EntityType.PLAYER || ent.type === EntityType.ENEMY || ent.type === EntityType.TROPHY) {
+             // 简单的椭圆阴影
+             ctx.beginPath();
+             ctx.ellipse(ent.pos.x + ent.size.x/2, ent.pos.y + ent.size.y - 2, ent.size.x/2, 4, 0, 0, Math.PI*2);
+             ctx.fill();
+        }
+    });
+    // 玩家阴影
+    ctx.beginPath();
+    ctx.ellipse(player.pos.x + player.size.x/2, player.pos.y + player.size.y - 2, player.size.x/2, 4, 0, 0, Math.PI*2);
+    ctx.fill();
+
+
+    // === 4. 绘制实体 (Entities Pass) ===
     entitiesRef.current.forEach(ent => {
       if (ent.isDead) return;
       if (ent.type === EntityType.SPAWNER) return;
 
       // 绘制平台
       if (ent.type === EntityType.PLATFORM) {
+        
+        // --- 终点渲染逻辑 (定制化主题) ---
+        if (ent.id.startsWith('end_gate')) {
+             
+             // 虽然是物理阻挡墙，但绘制不同的视觉效果
+             
+             if (ent.id === 'end_gate_sakura') { // 1-1 樱花树
+                 const tx = ent.pos.x + 50;
+                 const ty = CANVAS_HEIGHT - 40; // 地面
+                 
+                 // 树干
+                 ctx.fillStyle = '#5D4037';
+                 ctx.beginPath();
+                 ctx.moveTo(tx, ty);
+                 ctx.lineTo(tx + 40, ty);
+                 ctx.lineTo(tx + 30, ty - 200);
+                 ctx.lineTo(tx + 10, ty - 200);
+                 ctx.fill();
+                 
+                 // 树冠 (樱花) - 增加透明度层次
+                 const canopyCenters = [
+                     {x: 20, y: -220, r: 80}, {x: -30, y: -200, r: 60}, {x: 70, y: -210, r: 70},
+                     {x: 20, y: -280, r: 60}, {x: -20, y: -250, r: 50}
+                 ];
+                 canopyCenters.forEach((c, idx) => {
+                     ctx.fillStyle = idx % 2 === 0 ? '#F472B6' : '#FBCFE8'; // 深浅粉色交替
+                     ctx.beginPath(); ctx.arc(tx + c.x, ty + c.y, c.r, 0, Math.PI*2); ctx.fill();
+                 });
+                 // 飘落花瓣效果
+                 ctx.fillStyle = 'rgba(251, 207, 232, 0.8)';
+                 for(let i=0; i<15; i++) {
+                     ctx.beginPath(); 
+                     const offsetX = Math.sin(Date.now()/1000 + i) * 30;
+                     ctx.arc(tx - 50 + i*15 + offsetX, ty - 50 + Math.sin(Date.now()/500 + i)*20, 3, 0, Math.PI*2); 
+                     ctx.fill();
+                 }
+                 return;
+             }
+             else if (ent.id === 'end_gate_cave') { // 2-1 洞穴光亮
+                 // 绘制巨大光亮出口 (Bloom)
+                 const gradient = ctx.createLinearGradient(ent.pos.x - 50, 0, ent.pos.x + 100, 0);
+                 gradient.addColorStop(0, 'rgba(255, 255, 255, 0)');
+                 gradient.addColorStop(1, 'rgba(255, 255, 255, 0.8)');
+                 ctx.fillStyle = gradient;
+                 ctx.fillRect(ent.pos.x - 100, 0, 300, CANVAS_HEIGHT);
+                 return;
+             }
+             else if (ent.id === 'end_gate_house') { // 3-1 避雨小屋
+                 const hx = ent.pos.x + 20;
+                 const hy = CANVAS_HEIGHT - 160; 
+                 // 屋顶
+                 ctx.fillStyle = '#7F1D1D'; 
+                 ctx.beginPath(); ctx.moveTo(hx-20, hy+40); ctx.lineTo(hx+60, hy); ctx.lineTo(hx+140, hy+40); ctx.fill();
+                 // 屋身
+                 ctx.fillStyle = '#451A03';
+                 ctx.fillRect(hx, hy+40, 120, 80);
+                 // 门
+                 ctx.fillStyle = '#F59E0B'; // 暖光门
+                 ctx.shadowBlur = 20; ctx.shadowColor = '#F59E0B'; // 门内透光
+                 ctx.fillRect(hx+40, hy+70, 40, 50);
+                 ctx.shadowBlur = 0;
+                 return;
+             }
+             else if (ent.id === 'end_gate_beach') { // 4-1 码头
+                 // 栈桥柱子
+                 ctx.fillStyle = '#3E2723';
+                 ctx.fillRect(ent.pos.x - 50, CANVAS_HEIGHT - 100, 10, 100);
+                 ctx.fillRect(ent.pos.x + 50, CANVAS_HEIGHT - 100, 10, 100);
+                 // 桥面
+                 ctx.fillStyle = '#5D4037';
+                 ctx.fillRect(ent.pos.x - 80, CANVAS_HEIGHT - 110, 200, 10);
+                 // 阳光
+                 ctx.fillStyle = 'rgba(255, 255, 200, 0.4)';
+                 ctx.beginPath(); ctx.arc(ent.pos.x + 50, 100, 80, 0, Math.PI*2); ctx.fill();
+                 return;
+             }
+             else if (ent.id === 'end_gate_stairs') { // 5-1 墓地楼梯
+                 ctx.fillStyle = '#78350F';
+                 for(let i=0; i<10; i++) {
+                     ctx.fillRect(ent.pos.x + i*20, CANVAS_HEIGHT - i*20, 40, 20);
+                 }
+                 // 光口
+                 ctx.fillStyle = '#FFF';
+                 ctx.globalAlpha = 0.5;
+                 ctx.fillRect(ent.pos.x + 180, 0, 100, CANVAS_HEIGHT - 180);
+                 ctx.globalAlpha = 1.0;
+                 return;
+             }
+             else if (ent.id === 'end_gate_station') { // 6-1 车站
+                 // 站台柱子 (Pillars)
+                 ctx.fillStyle = '#475569'; // Slate-600
+                 // Draw two pillars
+                 ctx.fillRect(ent.pos.x + 10, 50, 10, CANVAS_HEIGHT - 50); // Left pillar
+                 ctx.fillRect(ent.pos.x + 100, 50, 10, CANVAS_HEIGHT - 50); // Right pillar
+                 
+                 // 站台顶棚 (Roof)
+                 ctx.fillStyle = '#334155'; // Slate-700
+                 ctx.beginPath();
+                 ctx.moveTo(ent.pos.x - 20, 50);
+                 ctx.lineTo(ent.pos.x + 140, 50);
+                 ctx.lineTo(ent.pos.x + 130, 20); // Sloped roof
+                 ctx.lineTo(ent.pos.x - 10, 20);
+                 ctx.fill();
+                 
+                 // 悬挂时钟 (Clock)
+                 ctx.fillStyle = '#FFF';
+                 ctx.beginPath(); ctx.arc(ent.pos.x + 60, 50, 15, 0, Math.PI*2); ctx.fill();
+                 ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ent.pos.x + 60, 50, 15, 0, Math.PI*2); ctx.stroke();
+                 // Hands
+                 ctx.beginPath(); ctx.moveTo(ent.pos.x + 60, 50); ctx.lineTo(ent.pos.x + 60, 40); ctx.stroke(); // Hour
+                 ctx.beginPath(); ctx.moveTo(ent.pos.x + 60, 50); ctx.lineTo(ent.pos.x + 68, 50); ctx.stroke(); // Minute
+
+                 // 站牌 (Sign)
+                 ctx.fillStyle = '#1E40AF'; // Blue sign
+                 ctx.fillRect(ent.pos.x + 85, 80, 40, 20);
+                 ctx.fillStyle = '#FFF';
+                 ctx.font = 'bold 8px Arial';
+                 ctx.fillText("STATION", ent.pos.x + 88, 93);
+                 
+                 // 长椅 (Bench)
+                 ctx.fillStyle = '#78350F'; // Wood
+                 ctx.fillRect(ent.pos.x + 30, CANVAS_HEIGHT - 30, 40, 5); // Seat
+                 ctx.fillRect(ent.pos.x + 35, CANVAS_HEIGHT - 25, 5, 25); // Leg
+                 ctx.fillRect(ent.pos.x + 60, CANVAS_HEIGHT - 25, 5, 25); // Leg
+                 
+                 return;
+             }
+             else if (ent.id === 'end_gate_earth_arctic') { // 7-1 地球 (北极视角)
+                 const earthX = ent.pos.x + 200;
+                 const earthY = CANVAS_HEIGHT/2;
+                 const radius = 300;
+                 
+                 // 海洋
+                 ctx.fillStyle = '#1E3A8A'; // 深蓝
+                 ctx.beginPath(); ctx.arc(earthX, earthY, radius, 0, Math.PI*2); ctx.fill();
+                 
+                 // 北极冰盖 (白色顶部)
+                 ctx.fillStyle = '#F8FAFC';
+                 ctx.beginPath(); 
+                 ctx.ellipse(earthX, earthY - 200, 220, 80, 0, 0, Math.PI*2); 
+                 ctx.fill();
+
+                 // 大陆 (绿色)
+                 ctx.fillStyle = '#15803D';
+                 ctx.beginPath(); ctx.arc(earthX - 100, earthY + 50, 60, 0, Math.PI*2); ctx.fill();
+                 ctx.beginPath(); ctx.arc(earthX + 150, earthY + 100, 80, 0, Math.PI*2); ctx.fill();
+                 
+                 // 大气层光晕
+                 ctx.shadowBlur = 50;
+                 ctx.shadowColor = '#60A5FA';
+                 ctx.beginPath(); ctx.arc(earthX, earthY, radius, 0, Math.PI*2); ctx.stroke();
+                 ctx.shadowBlur = 0;
+                 return;
+             }
+             
+             // 默认绘制 (Fallback)
+             ctx.fillStyle = '#111827'; 
+             ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+             return; 
+        }
+        
+        // --- 站台绘制 ---
+        if (ent.id === 'station_platform') {
+            ctx.fillStyle = '#94A3B8';
+            ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+            ctx.fillStyle = '#FACC15';
+            ctx.fillRect(ent.pos.x, ent.pos.y, 100, 4);
+            ctx.fillStyle = '#334155';
+            ctx.fillRect(ent.pos.x + 50, ent.pos.y, 20, 10);
+            return;
+        }
+
         if (isSeaLevel) {
             ctx.fillStyle = COLORS.rock;
             ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
@@ -955,54 +1280,97 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              ctx.lineWidth = 2;
              ctx.strokeRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
              ctx.beginPath(); ctx.moveTo(ent.pos.x, ent.pos.y); ctx.lineTo(ent.pos.x + ent.size.x, ent.pos.y + ent.size.y); ctx.stroke();
-        } else if (isTrainLevel && ent.id.includes('train_car')) {
-            // 火车车厢
-            ctx.fillStyle = COLORS.trainCar;
+        } else if (isTrainLevel && ent.id.includes('passengercar')) {
+            // === 客运列车绘制 ===
+            // 车身
+            ctx.fillStyle = COLORS.trainCarBody;
             ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
-            // 铆钉
-            ctx.fillStyle = '#334155';
-            for (let i = 0; i < ent.size.x; i += 20) {
-                ctx.beginPath(); ctx.arc(ent.pos.x + i + 10, ent.pos.y + 5, 2, 0, Math.PI*2); ctx.fill();
+            
+            // 蓝色腰线
+            ctx.fillStyle = COLORS.trainCarStripe;
+            ctx.fillRect(ent.pos.x, ent.pos.y + 30, ent.size.x, 10);
+            
+            // 窗户 (每隔一段距离画一个)
+            ctx.fillStyle = COLORS.trainWindow;
+            const windowWidth = 30;
+            const windowGap = 15;
+            for(let wx = 10; wx < ent.size.x - 10; wx += windowWidth + windowGap) {
+                ctx.fillRect(ent.pos.x + wx, ent.pos.y + 10, windowWidth, 15);
+                // 窗户反光
+                ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                ctx.fillRect(ent.pos.x + wx + 20, ent.pos.y + 10, 5, 15);
+                ctx.fillStyle = COLORS.trainWindow;
             }
-            // 轮子
+            
+            // 轮子 (底部)
             const wheelY = ent.pos.y + ent.size.y;
             ctx.fillStyle = COLORS.trainWheel;
-            for (let i = 20; i < ent.size.x; i += 60) {
-                 ctx.beginPath(); ctx.arc(ent.pos.x + i, wheelY + 5, 15, 0, Math.PI*2); ctx.fill();
-                 ctx.fillStyle = '#475569'; ctx.beginPath(); ctx.arc(ent.pos.x + i, wheelY + 5, 5, 0, Math.PI*2); ctx.fill();
-                 if (i + 60 < ent.size.x) { ctx.fillStyle = '#94A3B8'; ctx.fillRect(ent.pos.x + i, wheelY + 5, 60, 4); }
+            for(let wx = 30; wx < ent.size.x - 20; wx += 80) {
+                 ctx.fillStyle = '#334155';
+                 ctx.fillRect(ent.pos.x + wx - 5, wheelY, 40, 5);
+                 ctx.fillStyle = '#1E293B';
+                 // 旋转轮子效果
+                 const wheelRot = (Date.now() / 100) % (Math.PI*2);
+                 ctx.save();
+                 ctx.translate(ent.pos.x + wx, wheelY + 8);
+                 ctx.rotate(-wheelRot);
+                 ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI*2); ctx.fill();
+                 ctx.fillStyle = '#94A3B8'; ctx.fillRect(-2, -8, 4, 16); ctx.fillRect(-8, -2, 16, 4);
+                 ctx.restore();
+                 
+                 ctx.fillStyle = '#1E293B';
+                 ctx.save();
+                 ctx.translate(ent.pos.x + wx + 30, wheelY + 8);
+                 ctx.rotate(-wheelRot);
+                 ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI*2); ctx.fill();
+                 ctx.fillStyle = '#94A3B8'; ctx.fillRect(-2, -8, 4, 16); ctx.fillRect(-8, -2, 16, 4);
+                 ctx.restore();
             }
-            // 窗户
-            if (ent.size.y > 30) {
-                ctx.fillStyle = COLORS.trainWindow;
-                ctx.fillRect(ent.pos.x + 10, ent.pos.y + 10, 40, 20);
-                ctx.fillStyle = '#000'; ctx.strokeRect(ent.pos.x + 10, ent.pos.y + 10, 40, 20);
-            }
+
+            ctx.fillStyle = '#334155';
+            ctx.fillRect(ent.pos.x - 5, ent.pos.y + ent.size.y - 15, 5, 10); 
+            ctx.fillRect(ent.pos.x + ent.size.x, ent.pos.y + ent.size.y - 15, 5, 10); 
+
         } else {
-            // 普通草地
-            ctx.fillStyle = levelRef.current.groundColor || COLORS.ground;
+            // 普通草地/泥土 (增强纹理)
+            ctx.fillStyle = levelRef.current.groundColor || COLORS.groundDark;
             ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+            
+            // 顶部装饰 (草坪/雪层)
             if (ent.size.y > 10) {
-               ctx.fillStyle = levelRef.current.groundColor ? (levelRef.current.groundColor === COLORS.ice ? '#D6F2FE' : '#171717') : COLORS.dirt;
-               ctx.globalAlpha = 0.3; ctx.fillRect(ent.pos.x, ent.pos.y + 10, ent.size.x, ent.size.y - 10); ctx.globalAlpha = 1.0;
+               ctx.fillStyle = levelRef.current.groundColor ? (levelRef.current.groundColor === COLORS.ice ? '#D6F2FE' : '#65A30D') : COLORS.dirt;
+               // 如果是普通关卡，画亮色草坪
+               if (!levelRef.current.groundColor) ctx.fillStyle = COLORS.ground;
+               
+               ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, 10);
+               
+               // 纹理噪点 (简单模拟)
+               ctx.fillStyle = 'rgba(0,0,0,0.1)';
+               for(let i=0; i< ent.size.x; i+=10) {
+                   if (Math.random() > 0.5) ctx.fillRect(ent.pos.x + i, ent.pos.y + Math.random()*ent.size.y, 4, 4);
+               }
             }
-            ctx.strokeStyle = levelRef.current.groundColor === COLORS.ice ? '#7DD3FC' : '#000';
-            ctx.lineWidth = 2; ctx.strokeRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
         }
       } 
       // 绘制可破坏墙
       else if (ent.type === EntityType.BREAKABLE_WALL) {
           ctx.fillStyle = COLORS.sandWall;
           ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+          // 裂缝纹理
           ctx.strokeStyle = '#B45309'; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.moveTo(ent.pos.x, ent.pos.y); ctx.lineTo(ent.pos.x + ent.size.x, ent.pos.y + ent.size.y);
+          ctx.beginPath(); 
+          ctx.moveTo(ent.pos.x, ent.pos.y); ctx.lineTo(ent.pos.x + ent.size.x, ent.pos.y + ent.size.y);
           ctx.moveTo(ent.pos.x + ent.size.x, ent.pos.y); ctx.lineTo(ent.pos.x, ent.pos.y + ent.size.y);
-          ctx.stroke(); ctx.strokeRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+          ctx.stroke(); 
+          ctx.strokeRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
       }
       // 绘制金币
       else if (ent.type === EntityType.COIN) {
+        // 金币辉光
+        ctx.shadowBlur = 10; ctx.shadowColor = COLORS.coin;
         ctx.fillStyle = COLORS.coin;
         ctx.beginPath(); ctx.arc(ent.pos.x + ent.size.x/2, ent.pos.y + ent.size.y/2, ent.size.x/2, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
         ctx.fillStyle = COLORS.coinShine;
         ctx.beginPath(); ctx.arc(ent.pos.x + ent.size.x/2 - 3, ent.pos.y + ent.size.y/2 - 3, 3, 0, Math.PI * 2); ctx.fill();
       }
@@ -1021,7 +1389,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       else if (ent.type === EntityType.POTION) {
         const bob = Math.sin(Date.now() / 300) * 2;
         ctx.fillStyle = COLORS.potion;
+        ctx.shadowBlur = 10; ctx.shadowColor = COLORS.potion; // 药水发光
         ctx.beginPath(); ctx.arc(ent.pos.x + 10, ent.pos.y + 15 + bob, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
         ctx.fillRect(ent.pos.x + 7, ent.pos.y + bob, 6, 10);
         ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(ent.pos.x + 8, ent.pos.y + 13 + bob, 2, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#78350F'; ctx.fillRect(ent.pos.x + 6, ent.pos.y - 2 + bob, 8, 4);
@@ -1083,13 +1453,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                 ctx.beginPath(); ctx.arc(sX, sY, 5 + s*2, 0, Math.PI*2); ctx.fill();
             }
         } else {
-            // 普通奖杯
+            // 普通奖杯 (增加金属光泽)
+            ctx.shadowBlur = 15; ctx.shadowColor = COLORS.trophy;
             ctx.fillStyle = COLORS.trophy;
             ctx.beginPath();
             ctx.moveTo(ent.pos.x + 5, ent.pos.y + 5);
             ctx.lineTo(ent.pos.x + 35, ent.pos.y + 5);
             ctx.bezierCurveTo(ent.pos.x + 35, ent.pos.y + 25, ent.pos.x + 5, ent.pos.y + 25, ent.pos.x + 5, ent.pos.y + 5);
             ctx.fill();
+            ctx.shadowBlur = 0;
+            
             ctx.fillStyle = COLORS.trophyBase;
             ctx.fillRect(ent.pos.x + 15, ent.pos.y + 25, 10, 5);
             ctx.fillRect(ent.pos.x + 10, ent.pos.y + 30, 20, 5);
@@ -1148,6 +1521,19 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
          else {
              // 默认方块怪物
              ctx.fillRect(ent.pos.x, ent.pos.y, ent.size.x, ent.size.y);
+             
+             // 眼睛 - 确保根据速度朝向
+             if (!['FISH', 'SKELETON', 'MUMMY', 'SPIDER', 'BAT', 'ZOMBIE', 'BIRD', 'UFO', 'ALIEN', 'METEOR'].includes(ent.enemyVariant || '')) {
+                ctx.fillStyle = '#fff';
+                // 修复：如果速度不为0，强制使用速度方向作为朝向
+                const lookDir = Math.abs(ent.vel.x) > 0.1 ? (ent.vel.x > 0 ? 1 : 0) : 0;
+                
+                const eyeSize = ent.size.x * 0.2;
+                ctx.fillRect(ent.pos.x + (lookDir ? ent.size.x * 0.6 : ent.size.x * 0.1), ent.pos.y + ent.size.y * 0.2, eyeSize, eyeSize);
+                ctx.fillStyle = '#000';
+                const pupilSize = eyeSize * 0.5;
+                ctx.fillRect(ent.pos.x + (lookDir ? ent.size.x * 0.65 : ent.size.x * 0.15), ent.pos.y + ent.size.y * 0.25, pupilSize, pupilSize);
+             }
          }
          
          // 绘制血条 (针对Boss级怪物)
@@ -1159,7 +1545,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       }
     });
 
-    // 4. 绘制子弹 (Projectiles)
+    // 4. 绘制子弹 (Projectiles) - 加强光效
     bullets.forEach(b => {
         if (isShovelLevel) { // 铲子旋转
             ctx.save(); ctx.translate(b.pos.x, b.pos.y); ctx.rotate((Date.now() / 50) % (Math.PI * 2));
@@ -1167,12 +1553,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             ctx.fillStyle = COLORS.shovel; ctx.beginPath(); ctx.moveTo(5, -6); ctx.lineTo(17, -6); ctx.lineTo(20, 0); ctx.lineTo(17, 6); ctx.lineTo(5, 6); ctx.fill();
             ctx.restore();
         } else if (isLaserLevel) { // 激光
+            ctx.shadowBlur = 10; ctx.shadowColor = COLORS.laserBeam;
             ctx.strokeStyle = COLORS.laserBeam; ctx.lineWidth = 4; ctx.lineCap = 'round';
             const len = 25; const dir = b.vel.x > 0 ? 1 : -1;
             ctx.beginPath(); ctx.moveTo(b.pos.x, b.pos.y); ctx.lineTo(b.pos.x + len * dir, b.pos.y); ctx.stroke();
+            ctx.shadowBlur = 0;
         } else { // 普通子弹
+            ctx.shadowBlur = 5; ctx.shadowColor = '#FFF';
             ctx.fillStyle = COLORS.projectile;
             ctx.beginPath(); ctx.arc(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2, b.size.x/2, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
         }
     });
 
@@ -1217,6 +1607,30 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.globalAlpha = 1.0;
     ctx.restore();
 
+    // === Post-Processing Overlays (Screen Space) ===
+
+    // 黑暗遮罩 (Vignette for Cave/Sea) 
+    if (weather === 'CAVE' || isSeaLevel) {
+         const playerScreenX = player.pos.x - cameraX + player.size.x / 2;
+         const playerScreenY = player.pos.y + player.size.y / 2;
+
+         const gradient = ctx.createRadialGradient(
+             playerScreenX, playerScreenY, 60,
+             playerScreenX, playerScreenY, 500
+         );
+         gradient.addColorStop(0, 'rgba(0,0,0,0)'); // 中心透明
+         gradient.addColorStop(1, 'rgba(0,0,0,0.8)'); // 边缘黑暗
+         
+         ctx.fillStyle = gradient;
+         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    }
+    
+    // 水下扭曲效果模拟 (Overlay Blue Tint)
+    if (isSeaLevel) {
+        ctx.fillStyle = 'rgba(6, 182, 212, 0.1)';
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    }
+
     // 6. 绘制UI (Boss血条等)
     const boss = entitiesRef.current.find(e => e.type === EntityType.ENEMY && e.maxHealth && e.maxHealth > 2 && Math.abs(e.pos.x - player.pos.x) < 500 && !e.isDead);
     if (boss) {
@@ -1232,6 +1646,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     particlesRef.current.forEach(p => {
         if (p.color && (p.color.startsWith('rgba') || p.color === '#D97706' || p.color === '#FFFFFF')) {
             ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+        } else if (p.alpha) { // 带透明度的粒子 (雪花/雨滴)
+            ctx.fillStyle = p.color || '#FFF';
+            ctx.globalAlpha = p.alpha;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1.0;
         } else if (!p.color) { // 雨滴
             ctx.strokeStyle = 'rgba(173, 216, 230, 0.6)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - 2, p.y + 10); ctx.stroke();
         } else { // 特效粒子

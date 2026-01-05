@@ -81,7 +81,7 @@ export const COLORS = {
   bear: '#F8FAFC',      
   bearFace: '#FDE047',  
   bearFaceDrunk: '#EF4444', 
-  ninjaBody: '#111827', 
+  ninjaBody: '#64748B', // 改亮一点 (Slate-500) 以便在深色背景中看清
   ninjaSash: '#DC2626', 
   astroSuit: '#E2E8F0', 
   astroVisor: '#0EA5E9',
@@ -103,6 +103,8 @@ export const COLORS = {
   trophy: '#F59E0B', 
   trophyBase: '#78350F',
   meteor: '#475569', 
+  harpoonTip: '#94A3B8',
+  harpoonShaft: '#475569',
   
   // 敌人颜色定义
   enemy: '#DC2626',      

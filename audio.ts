@@ -111,7 +111,7 @@ class AudioController {
   }
 
   // --- 背景音乐 (BGM) 序列器 ---
-  startBGM(type: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' = 'NORMAL') {
+  startBGM(type: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL') {
     this.stopBGM();
     
     if (!this.ctx || this.isMuted) return;
@@ -136,6 +136,10 @@ class AudioController {
         // 欢快的C大调结尾曲 ("You-You" Theme)
         sequence = [523, 392, 330, 261, 330, 392, 523, 523, 0, 523, 392, 330];
         speed = 180; // 更快，更活力
+    } else if (type === 'WARM') {
+        // 温馨的摇篮曲风格 (C Major Pentatonic, Slow)
+        sequence = [261, 0, 329, 0, 392, 0, 0, 392, 0, 440, 0, 392, 0, 329, 0, 261, 0, 0]; 
+        speed = 450; // 很慢，很舒缓
     } else {
         // 默认欢快旋律
         sequence = [110, 0, 110, 0, 130, 0, 146, 130];
@@ -151,8 +155,11 @@ class AudioController {
             const gain = this.ctx.createGain();
             
             // 根据风格选择波形
-            osc.type = type === 'TOMB' ? 'sawtooth' : (type === 'SPACE' || type === 'CAVE' ? 'sine' : type === 'CREDITS' ? 'triangle' : 'triangle');
+            let oscType: OscillatorType = 'triangle';
+            if (type === 'TOMB') oscType = 'sawtooth';
+            if (type === 'SPACE' || type === 'CAVE' || type === 'WARM') oscType = 'sine';
             
+            osc.type = oscType;
             osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
             
             // 古墓增加失真感
@@ -172,10 +179,10 @@ class AudioController {
             }
 
             // 音量与衰减控制
-            const volume = type === 'CREDITS' ? 0.08 : (type === 'TOMB' ? 0.1 : 0.05);
+            const volume = type === 'CREDITS' ? 0.08 : (type === 'TOMB' ? 0.1 : (type === 'WARM' ? 0.15 : 0.05));
             gain.gain.setValueAtTime(volume, this.ctx.currentTime);
             
-            const release = type === 'CAVE' || type === 'SPACE' ? 0.8 : 0.2;
+            const release = (type === 'CAVE' || type === 'SPACE' || type === 'WARM') ? 0.8 : 0.2;
             gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + release);
             
             osc.connect(gain);

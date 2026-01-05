@@ -41,6 +41,10 @@ const createTrophy = (x: number, y: number, id: string) => ({
   id, type: EntityType.TROPHY, pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE - 40 }, size: { x: 40, y: 40 }, vel: { x: 0, y: 0 }
 });
 
+const createCheckpoint = (x: number, y: number, id: string) => ({
+  id, type: EntityType.CHECKPOINT, pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE - 40 }, size: { x: 40, y: 40 }, vel: { x: 0, y: 0 }, isChecked: false
+});
+
 const createSpawner = (x: number, y: number, variant: EnemyVariant, cooldownFrames: number, id: string) => ({
   id,
   type: EntityType.SPAWNER,
@@ -60,8 +64,8 @@ const createFamily = (x: number, y: number, variant: EnemyVariant, id: string) =
         width = 40;
         height = 40;
     } else if (variant === 'FAMILY_BRO' || variant === 'FAMILY_SIS') {
-        width = 20;
-        height = 20;
+        width = 24; // 稍微调大一点点防止太小
+        height = 24;
     }
 
     return {
@@ -153,6 +157,10 @@ export const levels: LevelData[] = [
       createPlatform(65, 5, 5, 1, 'high-ground'),
       createCoin(66, 6, 'c1'),
       createCoin(68, 6, 'c1_2'),
+      
+      // 调整存档点位置到下一段安全平台的起始处 (x=86)
+      // 之前的80是在平台边缘，容易掉下去
+      createCheckpoint(86, 1, 'cp_1_1'), 
 
       createPlatform(85, 1, 30, 1, 'floor-fast'),
       createSpawner(90, 2, 'FAST', 200, 'spawner2'), 
@@ -168,8 +176,7 @@ export const levels: LevelData[] = [
       createCoin(138, 6, 'c_new2'),
 
       // 终点: 樱花树
-      createPlatform(145, 1, 15, 1, 'final_run'), 
-      // 修正: 确保ID以 'end_gate' 开头，这样渲染逻辑才能生效
+      createPlatform(145, 1, 25, 1, 'final_run'), // Extended to width 25 (was 15) to fix floating tree
       createEndGate(158, 'end_gate_sakura'), 
       createTrophy(155, 2, 'finish_trophy')
     ]
@@ -201,6 +208,8 @@ export const levels: LevelData[] = [
       createPlatform(60, 1, 10, 1, 'c_edge2'),
       createSpawner(65, 2, 'BAT', 200, 'sp_bat1'),
 
+      createCheckpoint(65, 1, 'cp_2_1'),
+
       createPlatform(75, 4, 5, 1, 'c_high1'),
       createCoin(77, 6, 'cc1'),
       createPlatform(85, 2, 5, 1, 'c_low1'),
@@ -217,7 +226,7 @@ export const levels: LevelData[] = [
       createEnemy(146, 9, 3, 'BAT', 'c_bat_guard'),
 
       createPlatform(152, 2, 10, 1, 'c_final'),
-      createEndGate(162, 'end_gate_cave'), // 洞穴光亮出口
+      createEndGate(162, 'end_gate_cave'), 
       createTrophy(160, 3, 'finish_trophy_2')
     ]
   },
@@ -227,7 +236,7 @@ export const levels: LevelData[] = [
     nameCn: "风暴堡垒 3-1",
     width: 6600, 
     height: CANVAS_HEIGHT,
-    backgroundColor: '#2D1B2E', 
+    backgroundColor: '#1E1B2E', // 稍微调暗背景，让闪电更明显
     groundColor: '#3F3F46', 
     spikeColor: '#71717A',
     weather: 'RAIN',
@@ -250,8 +259,12 @@ export const levels: LevelData[] = [
       createCoin(63, 7, 'k_c1'),
       createPlatform(68, 4, 4, 1, 'k_step_4_down'),
       
+      // 调整存档点位置到庭院安全区 (x=76)
+      // 之前的70在台阶和庭院的间隙中
+      createCheckpoint(76, 2, 'cp_3_1'),
+
       createPlatform(75, 2, 30, 1, 'k_courtyard'),
-      createEnemy(80, 2, 10, 'TANK', 'k_tank_1'),
+      createEnemy(85, 2, 10, 'TANK', 'k_tank_1'), // 稍微后移坦克到85，给玩家喘息
       createSpawner(90, 3, 'FAST', 300, 'k_sp_fast'),
       createSpike(95, 2, 5, 'k_courtyard_spikes'),
       createWine(100, 5, 'k_wine_mid'),
@@ -270,7 +283,7 @@ export const levels: LevelData[] = [
       createCoin(150, 4, 'k_final_c1'),
       
       createTrophy(160, 3, 'finish_trophy_3'), 
-      createEndGate(163, 'end_gate_house') // 避雨小屋
+      createEndGate(163, 'end_gate_house') 
     ]
   },
   {
@@ -299,6 +312,8 @@ export const levels: LevelData[] = [
       createPlatform(40, 4, 3, 3, 'sea_float_rock1'),
       createCoin(41, 8, 'sea_c4'),
 
+      createCheckpoint(41, 7, 'cp_4_1'),
+
       createPlatform(50, 1, 30, 4, 'sea_tunnel_floor'),
       createPlatform(50, 8, 30, 4, 'sea_tunnel_ceil'),
       createEnemy(55, 5, 20, 'FISH', 'sea_fish_tunnel'),
@@ -321,7 +336,7 @@ export const levels: LevelData[] = [
       createPlatform(145, 5, 2, 2, 'sea_obstacle_mid'),
       createSpawner(150, 5, 'FISH', 100, 'sea_final_storm'),
       
-      createEndGate(163, 'end_gate_beach'), // 浮出水面/码头
+      createEndGate(163, 'end_gate_beach'), 
       createTrophy(160, 1, 'finish_trophy_4')
     ]
   },
@@ -355,6 +370,8 @@ export const levels: LevelData[] = [
       createWine(58, 2, 't_wine_2'),
       createEnemy(65, 1, 5, 'MUMMY', 't_mummy_2'),
       
+      createCheckpoint(72, 1, 'cp_5_1'),
+
       createWall(75, 12, 3, 12, 't_wall_block_3'),
       
       createCoin(80, 2, 't_c2'),
@@ -362,7 +379,6 @@ export const levels: LevelData[] = [
       createCoin(84, 2, 't_c4'),
       createSpawner(85, 1, 'SKELETON', 200, 't_sp_mid'),
 
-      // Extended Section
       createWall(100, 12, 2, 12, 't_wall_block_4'),
       createEnemy(110, 1, 5, 'MUMMY', 't_mummy_3'),
       createEnemy(115, 2, 0, 'SPIDER', 't_spider_3'),
@@ -371,7 +387,7 @@ export const levels: LevelData[] = [
       createSpawner(135, 1, 'SKELETON', 150, 't_sp_final'),
       createEnemy(140, 1, 5, 'MUMMY', 't_mummy_final'),
 
-      createEndGate(158, 'end_gate_stairs'), // 墓地出口台阶
+      createEndGate(158, 'end_gate_stairs'), 
       createTrophy(155, 1, 'finish_trophy_5')
     ]
   },
@@ -386,40 +402,35 @@ export const levels: LevelData[] = [
     weather: 'TRAIN',
     spawnPoint: { x: 50, y: CANVAS_HEIGHT - 150 },
     entities: [
-      // 1号列车 (起始)
-      // Car 1: 0 - 35
+      // 1号列车
       createPassengerCar(0, 35, 'p_train1'), 
       createWine(10, 3, 'tr_wine_start'),
-      createEnemy(25, 3, 10, 'ZOMBIE', 'tr_z1'),
+      createEnemy(25, 2, 10, 'ZOMBIE', 'tr_z1'), // FIXED: y=3 -> y=2 to stand on train
       
-      // Gap 1 (35 - 39) = 4 tiles (160px) - JUMPABLE
       createSpike(35, -5, 4, 'gap_death_1'), 
 
-      // 2号列车 (中部)
-      // Car 2: 39 - 69
+      // 2号列车
       createPassengerCar(39, 30, 'p_train2'),
       createSpawner(45, 3, 'BIRD', 250, 'tr_sp_bird1'),
       createCoin(50, 4, 'tr_c1'),
-      createEnemy(60, 3, 5, 'ZOMBIE', 'tr_z2'),
+      createEnemy(60, 2, 5, 'ZOMBIE', 'tr_z2'), // FIXED
 
-      // Gap 2 (69 - 73) = 4 tiles
+      createCheckpoint(65, 3, 'cp_6_1'),
+
       createSpike(69, -5, 4, 'gap_death_2'),
 
-      // 3号列车 (Boss战区)
-      // Car 3: 73 - 113
+      // 3号列车
       createPassengerCar(73, 40, 'p_train3'),
       createWine(80, 3, 'tr_wine_mid'),
-      createSpawner(85, 3, 'ZOMBIE', 300, 'tr_sp_z3'),
-      createEnemy(100, 3, 10, 'TANK', 'tr_boss'),
+      createSpawner(85, 3, 'ZOMBIE', 300, 'tr_sp_z3'), // Spawns zombie
+      createEnemy(100, 2, 10, 'TANK', 'tr_boss'), // FIXED
       
-      // Gap 3 (113 - 117) = 4 tiles
       createSpike(113, -5, 4, 'gap_death_3'),
 
-      // 车站站台 (终点)
-      // Station starts at 117
-      createPlatform(117, 1, 30, 2, 'station_platform'), // 站台实体
-      createEndGate(140, 'end_gate_station'), // 车站建筑
-      createTrophy(135, 3, 'finish_trophy_6') // 奖杯在站台上
+      // 车站
+      createPlatform(117, 1, 30, 2, 'station_platform'),
+      createEndGate(140, 'end_gate_station'), 
+      createTrophy(135, 3, 'finish_trophy_6')
     ]
   },
   {
@@ -444,6 +455,8 @@ export const levels: LevelData[] = [
       createCoin(28, 6, 'sp_c1'),
       createPotion(35, 6, 'sp_potion_1'),
       
+      createCheckpoint(45, 5, 'cp_7_1'), 
+
       createSpawner(50, 4, 'METEOR', 100, 'sp_met_2'),
       createSpawner(50, 7, 'METEOR', 140, 'sp_met_2b'),
       createSpawner(50, 2, 'METEOR', 180, 'sp_met_2c'),
@@ -470,7 +483,7 @@ export const levels: LevelData[] = [
       
       createEnemy(140, 5, 5, 'ALIEN', 'sp_alien_guard'),
       
-      createEndGate(163, 'end_gate_earth_arctic'), // 北极地球
+      createEndGate(163, 'end_gate_earth_arctic'),
       createTrophy(160, 5, 'finish_trophy_7')
     ]
   },
@@ -494,7 +507,7 @@ export const levels: LevelData[] = [
           createFamily(60, 1, 'FAMILY_DAD', 'fam_dad'),
           createFamily(70, 1, 'FAMILY_BRO', 'fam_bro_2'),
           
-          // Home Trigger
+          // 终点改为 home_trigger，在渲染时会画成房子
           { 
               id: 'home_trigger', 
               type: EntityType.TROPHY, 

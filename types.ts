@@ -21,6 +21,7 @@ export enum EntityType {
   COIN = 'COIN',                     // 金币
   ENEMY = 'ENEMY',                   // 敌人
   SPIKE = 'SPIKE',                   // 尖刺（陷阱）
+  CHECKPOINT = 'CHECKPOINT',         // 存档点 (新)
   FLAG = 'FLAG',                     // 旗帜（旧版终点）
   TROPHY = 'TROPHY',                 // 奖杯（关卡终点）
   LAVA = 'LAVA',                     // 岩浆
@@ -52,6 +53,10 @@ export interface Entity {
   color?: string;       // 颜色（可选）
   isDead?: boolean;     // 是否已销毁
   
+  // 动画状态 (新)
+  animFrame?: number;   // 当前动画帧索引
+  animTimer?: number;   // 动画计时器
+
   // 友好NPC/跟随逻辑
   isFollowing?: boolean; // 是否正在跟随玩家
   followOffset?: number; // 跟随时的随机偏移量，防止重叠
@@ -68,6 +73,9 @@ export interface Entity {
   spawnCooldown?: number; // 生成冷却时间（帧数）
   timeUntilSpawn?: number;// 距离下次生成的计时器
   spawnVariant?: EnemyVariant; // 生成的怪物类型
+  
+  // 存档点属性
+  isChecked?: boolean; // 是否已激活
 }
 
 // 玩家接口：继承自实体，增加玩家特有状态
@@ -83,6 +91,9 @@ export interface Player extends Entity {
   coyoteTimer: number;      // "土狼时间"：离开平台后的一小段时间内仍允许跳跃
   jumpBufferTimer: number;  // "跳跃预输入"：落地前按跳跃键，落地瞬间自动跳跃
   
+  // 视觉表现优化 (Juice)
+  renderScale: Vector;      // 渲染缩放 (用于挤压与拉伸效果)
+
   // 近战/交互状态
   isAttacking?: boolean;
   attackTimer?: number;

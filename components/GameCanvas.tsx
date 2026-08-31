@@ -1,18 +1,29 @@
 
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { 
   CANVAS_WIDTH, CANVAS_HEIGHT, GRAVITY, TILE_SIZE, COLORS, PLAYER_WIDTH, PLAYER_HEIGHT, 
   MOVE_SPEED, JUMP_FORCE, TERMINAL_VELOCITY, PROJECTILE_SPEED, PROJECTILE_SIZE, SHOOT_COOLDOWN, 
   WINE_DURATION, WINE_SPEED_MULTIPLIER, WINE_JUMP_MULTIPLIER,
   ACCELERATION, FRICTION, AIR_FRICTION, COYOTE_TIME, JUMP_BUFFER,
-  SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS
+  SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS,
+  MAX_SPAWNED_ENEMIES, STATS_SYNC_INTERVAL, ENTITY_CLEANUP_INTERVAL, SPATIAL_GRID_CELL_SIZE,
+  LIGHTING_UPDATE_INTERVAL, MAX_RAIN_SPORE_PER_FRAME, SUN_RAYS_ENABLED,
 } from '../constants';
-import { Entity, Player, EntityType, GameStatus, GameState, EnemyVariant } from '../types';
+import { Entity, Player, EntityType, GameStatus, GameState } from '../types';
 import { levels } from '../levels';
 import { audio } from '../audio';
-import { ArrowLeft, ArrowRight, ArrowUp, Crosshair, Gamepad2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Crosshair } from 'lucide-react';
+import {
+  ParticlePool, MAX_PARTICLES, StatsBuffer, SpatialGrid,
+  checkCollision, checkSweptCollision, isInCameraRange,
+  addShake, updateCameraDecay, updateCameraFollow,
+  countLiveEnemies, compactDeadEntities, spawnEnemy as spawnEnemyFromSpawner,
+  canSpawnerSpawn,
+  pollGamepadState, isMoveLeft, isMoveRight, isMoveUp, isMoveDown, isJumpHeld, isFireHeld,
+  prepareCanvas2D, drawCheckpointOverlay,
+  CameraState, Cloud, Tree, Planet, CaveSpike, SunRay, Trail,
+} from '../engine';
 
-// --- 接口定义 ---
 interface GameCanvasProps {
   levelId: number;
   gameState: GameState;
@@ -20,31 +31,6 @@ interface GameCanvasProps {
   onLevelComplete: () => void;
   onPlayerHit: () => void;
   onGameOver: () => void;
-}
-
-// 视觉效果接口
-interface Cloud { x: number; y: number; speed: number; size: number; }
-interface Tree { x: number; y: number; width: number; height: number; color: string; }
-interface Planet { 
-    x: number; y: number; size: number; 
-    color: string; type: 'RING' | 'GAS' | 'CRATER' | 'SOLID'; 
-    speed: number; 
-}
-interface CaveSpike { x: number; height: number; type: 'CEILING' | 'FLOOR'; width: number; }
-interface SunRay { x: number; width: number; angle: number; speed: number; alpha: number; }
-
-// --- 对象池优化：粒子系统 ---
-interface Particle { 
-    active: boolean;
-    x: number; y: number; speedX: number; speedY: number; 
-    size: number; life: number; color?: string; alpha?: number;
-    isScreenSpace?: boolean; // 新增：标记粒子是否在屏幕空间（用于雨雪）
-}
-const MAX_PARTICLES = 300;
-
-// 运动轨迹 (Motion Trail)
-interface Trail {
-    x: number; y: number; facingRight: boolean; alpha: number; type: 'BEAR' | 'DASH';
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setGameState, onLevelComplete, onPlayerHit, onGameOver }) => {
@@ -81,18 +67,25 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
   const entitiesRef = useRef<Entity[]>(JSON.parse(JSON.stringify(levelRef.current.entities)));
   const bulletsRef = useRef<Entity[]>([]); 
-  const cameraRef = useRef({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); 
+  const cameraRef = useRef<CameraState>({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); 
   const keysRef = useRef<{ [key: string]: boolean }>({}); 
   const timeRef = useRef<number>(0); 
   
-  // --- 新增：游戏手感优化 Refs ---
-  const hitStopRef = useRef<number>(0); // 顿帧计时器
-  const gamePadIndexRef = useRef<number | null>(null); // 手柄索引
-  const particlePoolRef = useRef<Particle[]>(
-      new Array(MAX_PARTICLES).fill(null).map(() => ({ 
-          active: false, x: 0, y: 0, speedX: 0, speedY: 0, size: 0, life: 0 
-      }))
-  );
+  const hitStopRef = useRef<number>(0);
+  const gamePadIndexRef = useRef<number | null>(null);
+  const particlePoolRef = useRef(new ParticlePool(MAX_PARTICLES));
+  const statsBufferRef = useRef(new StatsBuffer());
+  const spatialGridRef = useRef(new SpatialGrid(SPATIAL_GRID_CELL_SIZE));
+  const prevGameStatusRef = useRef(gameState.status);
+  const gameStatusRef = useRef(gameState.status);
+  const treesRightMostRef = useRef(CANVAS_WIDTH);
+  const gamepadStateRef = useRef(pollGamepadState(null));
+  const lightingFrameRef = useRef(0);
+
+  const spawnParticle = (opts: Parameters<ParticlePool['spawn']>[0]) => particlePoolRef.current.spawn(opts);
+  const deactivateParticle = (particle: Parameters<ParticlePool['deactivate']>[0]) => particlePoolRef.current.deactivate(particle);
+  const queueStatsUpdate = (delta: { score?: number; coins?: number }) => statsBufferRef.current.queue(delta);
+  const flushStats = () => statsBufferRef.current.flush(setGameState);
   
   // --- 视觉特效 Refs ---
   const trailsRef = useRef<Trail[]>([]);
@@ -102,79 +95,30 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   const caveSpikesRef = useRef<CaveSpike[]>([]); 
   const sunRaysRef = useRef<SunRay[]>([]);
 
-  // --- 粒子系统方法 ---
-  const spawnParticle = (opts: Partial<Omit<Particle, 'active'>>) => {
-      const pool = particlePoolRef.current;
-      for (let i = 0; i < pool.length; i++) {
-          if (!pool[i].active) {
-              pool[i] = { 
-                  active: true, 
-                  x: opts.x || 0, 
-                  y: opts.y || 0, 
-                  speedX: opts.speedX || 0, 
-                  speedY: opts.speedY || 0, 
-                  size: opts.size || 2, 
-                  life: opts.life || 1, 
-                  color: opts.color, 
-                  alpha: opts.alpha,
-                  isScreenSpace: opts.isScreenSpace || false
-              };
-              return;
-          }
-      }
-  };
-
   // --- 挤压与拉伸助手 ---
   const squashAndStretch = (scaleX: number, scaleY: number) => {
       playerRef.current.renderScale.x = scaleX;
       playerRef.current.renderScale.y = scaleY;
   };
 
-  // --- 手柄检测 ---
+  // --- 手柄检测（独立状态，不覆盖键盘） ---
   const pollGamepad = () => {
-    const gamepads = navigator.getGamepads();
-    if (!gamepads) return;
-
     if (gamePadIndexRef.current === null) {
-        for (const gp of gamepads) {
-            if (gp && gp.connected) {
-                gamePadIndexRef.current = gp.index;
-                break;
-            }
+      const gamepads = navigator.getGamepads();
+      for (const gp of gamepads ?? []) {
+        if (gp?.connected) {
+          gamePadIndexRef.current = gp.index;
+          break;
         }
+      }
     }
-
-    if (gamePadIndexRef.current !== null) {
-        const gp = gamepads[gamePadIndexRef.current];
-        if (gp) {
-            if (gp.axes[0] < -0.5) keysRef.current['ArrowLeft'] = true;
-            else if (gp.axes[0] > 0.5) keysRef.current['ArrowRight'] = true;
-            else {
-                if (!keysRef.current['KeyA'] && !keysRef.current['ArrowLeft_K']) keysRef.current['ArrowLeft'] = false;
-                if (!keysRef.current['KeyD'] && !keysRef.current['ArrowRight_K']) keysRef.current['ArrowRight'] = false;
-            }
-            if (gp.buttons[14].pressed) keysRef.current['ArrowLeft'] = true;
-            if (gp.buttons[15].pressed) keysRef.current['ArrowRight'] = true;
-
-            if (gp.buttons[0].pressed) {
-                if (!keysRef.current['Space_Held']) { 
-                    keysRef.current['Space'] = true;
-                    playerRef.current.jumpBufferTimer = JUMP_BUFFER;
-                    keysRef.current['Space_Held'] = true;
-                }
-            } else {
-                keysRef.current['Space'] = false;
-                keysRef.current['Space_Held'] = false;
-            }
-
-            if (gp.buttons[2].pressed || gp.buttons[1].pressed) {
-                keysRef.current['KeyF'] = true;
-            } else {
-                keysRef.current['KeyF'] = false;
-            }
-        }
-    }
+    gamepadStateRef.current = pollGamepadState(gamePadIndexRef.current);
   };
+
+  const getInput = () => ({
+    keys: keysRef.current,
+    gamepad: gamepadStateRef.current,
+  });
 
 
   // --- 初始化环境装饰 (Mount时执行) ---
@@ -193,6 +137,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        height: 100 + Math.random() * 150,
        color: '#171717' 
     }));
+    treesRightMostRef.current = Math.max(CANVAS_WIDTH, ...treesRef.current.map(t => t.x));
 
     const planetColors = [COLORS.planetRed, COLORS.planetBlue, '#D1D5DB', '#FCD34D', '#A78BFA', '#F472B6', '#34D399'];
     const planetTypes: ('RING' | 'GAS' | 'CRATER' | 'SOLID')[] = ['RING', 'GAS', 'CRATER', 'SOLID', 'SOLID', 'GAS'];
@@ -224,7 +169,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         alpha: 0.1 + Math.random() * 0.2
     }));
 
-    particlePoolRef.current.forEach(p => p.active = false);
+    particlePoolRef.current.reset();
     trailsRef.current = [];
   }, []);
 
@@ -319,7 +264,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     cameraRef.current.x = 0;
     cameraRef.current.shake = 0;
     cameraRef.current.lookAheadOffset = 0;
-    particlePoolRef.current.forEach(p => p.active = false);
+    particlePoolRef.current.reset();
+    statsBufferRef.current.reset();
     trailsRef.current = [];
     timeRef.current = 0;
     
@@ -331,31 +277,19 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     audio.startBGM(bgmType);
     
     return () => {
+      flushStats();
       audio.stopBGM();
     }
   }, [levelId]);
 
-  // --- 辅助函数 (提前定义) ---
-  const checkCollision = (rect1: Entity, rect2: Entity) => {
-    return (
-      rect1.pos.x < rect2.pos.x + rect2.size.x &&
-      rect1.pos.x + rect1.size.x > rect2.pos.x &&
-      rect1.pos.y < rect2.pos.y + rect2.size.y &&
-      rect1.pos.y + rect1.size.y > rect2.pos.y
-    );
-  };
-
-  const addShake = (amount: number) => {
-      cameraRef.current.shake = amount;
-  };
-
+  // --- 辅助函数 ---
   const handleDamage = (targetPlayer: Player) => {
     onPlayerHit();
     targetPlayer.isInvulnerable = true;
     targetPlayer.invulnerableTimer = 120;
     
     audio.playDamage();
-    addShake(5);
+    addShake(cameraRef.current, 5);
     hitStopRef.current = 5;
     
     for (let k = 0; k < 8; k++) {
@@ -369,6 +303,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
   // --- 复活/状态同步逻辑 ---
   useEffect(() => {
+    gameStatusRef.current = gameState.status;
+
     if (gameState.status === GameStatus.PLAYING) {
         if (playerRef.current.invulnerableTimer === 0) {
              playerRef.current.isInvulnerable = true;
@@ -393,7 +329,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                handleDamage(playerRef.current); 
            }
        }
-       keysRef.current = {}; 
+       const prevStatus = prevGameStatusRef.current;
+       if (prevStatus === GameStatus.REVIVE_PROMPT || prevStatus === GameStatus.LEVEL_COMPLETE) {
+           keysRef.current = {};
+       }
+       prevGameStatusRef.current = gameState.status;
        
        let bgmType: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL';
         if (levelRef.current.weather === 'CAVE') bgmType = 'CAVE';
@@ -402,6 +342,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (levelRef.current.weather === 'ARCTIC') bgmType = 'WARM';
         audio.startBGM(bgmType);
     } else {
+       flushStats();
        audio.stopBGM();
     }
   }, [gameState.status]);
@@ -423,76 +364,38 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if(e.code === 'ArrowRight') keysRef.current['ArrowRight_K'] = false;
     };
     
+    const handleGamepadConnected = (e: GamepadEvent) => {
+      gamePadIndexRef.current = e.gamepad.index;
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener("gamepadconnected", (e) => {
-        gamePadIndexRef.current = e.gamepad.index;
-    });
+    window.addEventListener('gamepadconnected', handleGamepadConnected);
+
+    if (gamePadIndexRef.current === null) {
+      for (const gp of navigator.getGamepads() ?? []) {
+        if (gp?.connected) {
+          gamePadIndexRef.current = gp.index;
+          break;
+        }
+      }
+    }
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('gamepadconnected', handleGamepadConnected);
     };
   }, []);
 
   const spawnEnemy = (spawner: Entity) => {
-      const variant = spawner.spawnVariant || 'NORMAL';
-      let width = 30;
-      let height = 30;
-      let speed = 2;
-      let health = 1;
-      let color = COLORS.enemy;
-
-      if (variant === 'TANK') { width = 50; height = 50; speed = 1; health = 3; color = COLORS.enemyTank; } 
-      else if (variant === 'FAST') { width = 25; height = 25; speed = 4; health = 1; color = COLORS.enemyFast; } 
-      else if (variant === 'BAT' || variant === 'BIRD') { width = 30; height = 20; speed = 3; health = 1; color = variant === 'BIRD' ? COLORS.enemyBird : COLORS.enemyBat; } 
-      else if (variant === 'SLIME') { width = 30; height = 20; speed = 1; health = 2; color = COLORS.enemySlime; } 
-      else if (variant === 'FISH') { width = 35; height = 25; speed = 2.5; health = 1; color = COLORS.enemyFish; } 
-      else if (variant === 'SKELETON') { width = 25; height = 45; speed = 2; health = 2; color = COLORS.enemySkeleton; } 
-      else if (variant === 'MUMMY') { width = 30; height = 45; speed = 1; health = 4; color = COLORS.enemyMummy; } 
-      else if (variant === 'ZOMBIE') { width = 30; height = 45; speed = 1.5; health = 3; color = COLORS.enemyZombie; } 
-      else if (variant === 'SPIDER') { width = 30; height = 25; speed = 2; health = 1; color = COLORS.enemySpider; } 
-      else if (variant === 'ALIEN') { width = 25; height = 35; speed = 2; health = 2; color = COLORS.enemyAlien; } 
-      else if (variant === 'UFO') { width = 40; height = 25; speed = 4; health = 2; color = COLORS.enemyUfo; } 
-      else if (variant === 'METEOR') { width = 35; height = 35; speed = 4; health = 1; color = COLORS.meteor; }
-
-      const dir = Math.random() > 0.5 ? 1 : -1;
-      let spawnY = spawner.pos.y - height + spawner.size.y; 
-      
-      if (variant === 'BAT' || variant === 'BIRD' || variant === 'UFO') {
-          spawnY -= (variant === 'UFO' ? 100 + Math.random() * 50 : 100); 
-      }
-      if (variant === 'METEOR') {
-          spawnY = spawner.pos.y - 300 + Math.random() * 400;
-      }
-
-      const enemy: Entity = {
-        id: `spawned_${Date.now()}_${Math.random()}`,
-        type: EntityType.ENEMY,
-        pos: { x: spawner.pos.x, y: spawnY }, 
-        size: { x: width, y: height },
-        vel: { x: speed * dir, y: 0 },
-        patrolStart: spawner.pos.x - 400,
-        patrolEnd: spawner.pos.x + 400,
-        enemyVariant: variant,
-        health,
-        maxHealth: health,
-        color
-      };
-
-      if (variant === 'SPIDER') { enemy.vel.x = 0; enemy.vel.y = speed; enemy.initialY = spawnY; }
-      if (variant === 'METEOR') {
-          enemy.vel.x = -speed - Math.random() * 2; 
-          enemy.vel.y = (Math.random() - 0.5) * 1; 
-          enemy.patrolStart = -99999;
-          enemy.patrolEnd = 99999;
-      }
-
-      entitiesRef.current.push(enemy);
-      
-      const dist = Math.abs(spawner.pos.x - playerRef.current.pos.x);
-      if (dist < 800 && variant !== 'METEOR') { 
-          audio.playRoar();
-      }
+      spawnEnemyFromSpawner(spawner, {
+          entities: entitiesRef.current,
+          player: playerRef.current,
+          liveEnemyCount: countLiveEnemies(entitiesRef.current),
+          maxEnemies: MAX_SPAWNED_ENEMIES,
+          onRoar: () => audio.playRoar(),
+      });
   };
 
   // --- 更新环境逻辑 (粒子/背景) ---
@@ -524,15 +427,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         treesRef.current.forEach(tree => {
              tree.x -= trainSpeed; 
              if (tree.x + tree.width < -100) {
-                 const rightMostX = Math.max(...treesRef.current.map(t => t.x), CANVAS_WIDTH);
-                 tree.x = rightMostX + 300 + Math.random() * 400; 
+                 tree.x = treesRightMostRef.current + 300 + Math.random() * 400; 
                  tree.height = 100 + Math.random() * 150;
                  tree.y = CANVAS_HEIGHT - 30; 
+                 treesRightMostRef.current = Math.max(treesRightMostRef.current, tree.x);
              }
         });
         
-        const activeParticles = particlePoolRef.current.filter(p => p.active).length;
-        if (activeParticles < MAX_PARTICLES && Math.random() > 0.8) { 
+        if (particlePoolRef.current.activeCount < MAX_PARTICLES && Math.random() > 0.8) { 
             const spawnX = cameraRef.current.x + CANVAS_WIDTH + Math.random() * 100;
             spawnParticle({
                 x: spawnX, y: Math.random() * CANVAS_HEIGHT,
@@ -569,8 +471,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
     }
 
-    const activeCount = particlePoolRef.current.filter(p => p.active).length;
-    if (activeCount < MAX_PARTICLES) {
+    if (particlePoolRef.current.activeCount < MAX_PARTICLES) {
         if (weather === 'SEA' && Math.random() > 0.9) { 
              const spawnX = cameraRef.current.x + Math.random() * CANVAS_WIDTH;
              spawnParticle({
@@ -591,8 +492,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              });
         }
         else if (weather === 'RAIN') { 
-           // 暴雨：每帧多次生成
-           for(let i=0; i<3; i++) {
+           for (let i = 0; i < MAX_RAIN_SPORE_PER_FRAME; i++) {
                const spawnX = Math.random() * CANVAS_WIDTH;
                spawnParticle({
                   x: spawnX, y: -20,
@@ -616,7 +516,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        });
     }
 
-    particlePoolRef.current.forEach(p => {
+    particlePoolRef.current.pool.forEach(p => {
         if (!p.active) return;
         p.x += p.speedX;
         p.y += p.speedY;
@@ -625,7 +525,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             p.life -= 0.05;
             p.size *= 0.95; 
         } else if (weather === 'SEA' && p.y < 0) {
-            p.active = false;
+            deactivateParticle(p);
         }
 
         if (p.y > CANVAS_HEIGHT && weather !== 'SEA') {
@@ -634,10 +534,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                p.y = -10; 
                p.x = Math.random() * CANVAS_WIDTH;
            } else {
-               p.active = false;
+               deactivateParticle(p);
            }
         } else if (p.life <= 0) {
-           p.active = false;
+           deactivateParticle(p);
         }
     });
 
@@ -657,11 +557,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     updateEnvironment();
 
-    if (gameState.status !== GameStatus.PLAYING) return;
+    if (gameStatusRef.current !== GameStatus.PLAYING) return;
+
+    if (timeRef.current % STATS_SYNC_INTERVAL === 0) {
+        flushStats();
+    }
+    if (timeRef.current % ENTITY_CLEANUP_INTERVAL === 0) {
+        entitiesRef.current = compactDeadEntities(entitiesRef.current, cameraRef.current.x);
+    }
 
     const player = playerRef.current;
     const entities = entitiesRef.current;
     const bullets = bulletsRef.current;
+    const spatialGrid = spatialGridRef.current;
+    const cameraX = cameraRef.current.x;
     const weather = levelRef.current.weather;
     const isSeaLevel = weather === 'SEA';
     const isSpaceLevel = weather === 'SPACE'; 
@@ -710,15 +619,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (player.attackTimer <= 0) player.isAttacking = false;
     }
     
-    if (cameraRef.current.shake > 0) {
-        cameraRef.current.shake *= 0.9;
-        if (cameraRef.current.shake < 0.5) cameraRef.current.shake = 0;
-    }
+    updateCameraDecay(cameraRef.current);
 
     if (player.shootCooldown > 0) player.shootCooldown--;
     
+    spatialGrid.rebuild(entities);
+
     // 隐藏关禁止射击
-    if (!isHiddenLevel && !isArcticLevel && (keysRef.current['KeyF'] || keysRef.current['KeyJ']) && player.shootCooldown <= 0) {
+    if (!isHiddenLevel && !isArcticLevel && isFireHeld(keysRef.current, gamepadStateRef.current) && player.shootCooldown <= 0) {
         player.shootCooldown = SHOOT_COOLDOWN;
         if (player.drunkTimer > 0) player.shootCooldown = SHOOT_COOLDOWN / 2; 
 
@@ -727,7 +635,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         const bPosX = player.facingRight ? player.pos.x + player.size.x : player.pos.x - PROJECTILE_SIZE;
 
         bullets.push({
-            id: `b_${Date.now()}`,
+            id: `b_${timeRef.current}_${bullets.length}`,
             type: EntityType.PROJECTILE,
             pos: { x: bPosX, y: spawnY },
             size: { x: PROJECTILE_SIZE, y: PROJECTILE_SIZE }, 
@@ -735,11 +643,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
         
         audio.playShoot();
-        addShake(2); 
+        addShake(cameraRef.current, 2); 
     }
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
+        const prevX = b.pos.x;
         b.pos.x += b.vel.x;
         
         // 旋转动画 (Shuriken/Shovel)
@@ -755,27 +664,28 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         }
 
         let bulletHit = false;
+        const bulletCandidates = spatialGrid.queryRect(b.pos.x, b.pos.y, b.size.x, b.size.y, 100);
 
-        // 性能优化：剔除检测 BUG修复 - 增加物体宽度的判断
-        for (const ent of entities) {
+        for (const ent of bulletCandidates) {
             if (ent.isDead) continue; 
-            
-            // 修复：确保物体左右边界都在考虑范围内，避免长平台被错误剔除
-            const entRight = ent.pos.x + ent.size.x;
-            if (entRight < cameraRef.current.x - 100 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 100) continue;
+            if (!isInCameraRange(ent, cameraX, CANVAS_WIDTH, 100)) continue;
 
             if (ent.type === EntityType.ENEMY) {
                 if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) continue;
 
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true;
                     ent.health = (ent.health || 1) - 1;
                     if (ent.health <= 0) {
                         ent.isDead = true;
                         const bonus = (ent.enemyVariant === 'TANK' || ent.enemyVariant === 'ZOMBIE' || ent.enemyVariant === 'UFO' ? 500 : 200);
-                        setGameState(prev => ({ ...prev, score: prev.score + bonus }));
+                        queueStatsUpdate({ score: bonus });
                         audio.playKill();
-                        addShake(10);
+                        addShake(cameraRef.current, 10);
                         hitStopRef.current = 5; 
                         
                         for (let k = 0; k < 8; k++) {
@@ -789,13 +699,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     } else {
                         ent.pos.x += b.vel.x > 0 ? 5 : -5;
                         audio.playDamage();
-                        addShake(2);
+                        addShake(cameraRef.current, 2);
                         hitStopRef.current = 2; 
                     }
                     break;
                 }
             } else if (ent.type === EntityType.PLATFORM) {
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true; 
                     spawnParticle({
                         x: b.pos.x, y: b.pos.y, speedX: -b.vel.x * 0.2, speedY: (Math.random()-0.5)*4,
@@ -804,12 +718,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     break;
                 }
             } else if (ent.type === EntityType.BREAKABLE_WALL) {
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true;
                     if (isTombLevel) {
                          ent.isDead = true;
                          audio.playDig();
-                         addShake(5);
+                         addShake(cameraRef.current, 5);
                          for (let k = 0; k < 5; k++) {
                             spawnParticle({
                                 x: ent.pos.x + Math.random() * ent.size.x, y: ent.pos.y + Math.random() * ent.size.y,
@@ -832,15 +750,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const isFreeFly = isSeaLevel || isSpaceLevel; 
 
     if (isFreeFly) {
-        if (keysRef.current['ArrowLeft']) {
+        const { keys, gamepad } = getInput();
+        if (isMoveLeft(keys, gamepad)) {
             player.vel.x -= ACCELERATION;
             player.facingRight = false;
-        } else if (keysRef.current['ArrowRight']) {
+        } else if (isMoveRight(keys, gamepad)) {
             player.vel.x += ACCELERATION;
             player.facingRight = true;
         }
-        if (keysRef.current['ArrowUp']) player.vel.y -= ACCELERATION;
-        else if (keysRef.current['ArrowDown']) player.vel.y += ACCELERATION;
+        if (isMoveUp(keys, gamepad)) player.vel.y -= ACCELERATION;
+        else if (isMoveDown(keys, gamepad)) player.vel.y += ACCELERATION;
 
         player.vel.x *= WATER_FRICTION;
         player.vel.y *= WATER_FRICTION;
@@ -850,10 +769,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (player.vel.y < -SWIM_SPEED) player.vel.y = -SWIM_SPEED;
 
     } else {
-        if (keysRef.current['ArrowLeft']) {
+        const { keys, gamepad } = getInput();
+        if (isMoveLeft(keys, gamepad)) {
             player.vel.x -= ACCELERATION;
             player.facingRight = false;
-        } else if (keysRef.current['ArrowRight']) {
+        } else if (isMoveRight(keys, gamepad)) {
             player.vel.x += ACCELERATION;
             player.facingRight = true;
         } else {
@@ -887,7 +807,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             }
         }
 
-        if (player.vel.y < 0 && !keysRef.current['Space'] && !keysRef.current['ArrowUp']) {
+        if (player.vel.y < 0 && !isJumpHeld(keysRef.current, gamepadStateRef.current)) {
             player.vel.y *= 0.5;
         }
 
@@ -901,15 +821,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     if (player.pos.x < 0) player.pos.x = 0;
     if (player.pos.x > levelRef.current.width - player.size.x) player.pos.x = levelRef.current.width - player.size.x;
 
-    for (const ent of entities) {
+    const wallQueryBuffer = 200;
+    const horizontalWallCandidates = spatialGrid.queryRect(
+      player.pos.x, player.pos.y, player.size.x, player.size.y, wallQueryBuffer,
+    );
+
+    for (const ent of horizontalWallCandidates) {
       if (ent.isDead) continue; 
-      
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
-      
-      if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
-        if (checkCollision(player, ent)) {
+      if (ent.type !== EntityType.PLATFORM && ent.type !== EntityType.BREAKABLE_WALL) continue;
+
+      if (checkCollision(player, ent)) {
           if (player.vel.x > 0) {
             player.pos.x = ent.pos.x - player.size.x;
             player.vel.x = 0; 
@@ -917,21 +838,21 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.pos.x = ent.pos.x + ent.size.x;
             player.vel.x = 0;
           }
-        }
       }
     }
 
     player.pos.y += player.vel.y;
 
     let landed = false;
-    for (const ent of entities) {
-      if (ent.isDead) continue; 
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
+    const verticalWallCandidates = spatialGrid.queryRect(
+      player.pos.x, player.pos.y, player.size.x, player.size.y, wallQueryBuffer,
+    );
 
-      if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
-        if (checkCollision(player, ent)) {
+    for (const ent of verticalWallCandidates) {
+      if (ent.isDead) continue; 
+      if (ent.type !== EntityType.PLATFORM && ent.type !== EntityType.BREAKABLE_WALL) continue;
+
+      if (checkCollision(player, ent)) {
           if (player.vel.y > 0) { 
             player.pos.y = ent.pos.y - player.size.y;
             player.vel.y = 0;
@@ -943,7 +864,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.pos.y = ent.pos.y + ent.size.y;
             player.vel.y = 0;
           }
-        }
       }
     }
     player.isGrounded = landed;
@@ -965,11 +885,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       if (player.invulnerableTimer <= 0) player.isInvulnerable = false;
     }
 
-    entities.forEach(ent => {
+    spatialGrid.rebuild(entities);
+    const activeEntities = spatialGrid.queryViewport(
+      cameraRef.current.x, CANVAS_WIDTH, levelRef.current.height, wallQueryBuffer,
+    );
+
+    activeEntities.forEach(ent => {
       if (ent.isDead) return;
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) return;
 
       if (ent.type === EntityType.ENEMY) {
         if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) {
@@ -1002,16 +924,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         } 
         
         else if (ent.enemyVariant === 'BAT' || ent.enemyVariant === 'BIRD') {
-             ent.pos.y += Math.sin(Date.now() / 200) * 1; 
+             ent.pos.y += Math.sin(timeRef.current / 200) * 1; 
              ent.pos.x += ent.vel.x;
         } else if (ent.enemyVariant === 'FISH') {
              ent.pos.x += ent.vel.x;
-             ent.pos.y += Math.cos(Date.now() / 400) * 0.5;
+             ent.pos.y += Math.cos(timeRef.current / 400) * 0.5;
         } else if (ent.enemyVariant === 'UFO') {
              ent.pos.x += ent.vel.x;
-             ent.pos.y += Math.sin(Date.now() / 300) * 1.5; 
+             ent.pos.y += Math.sin(timeRef.current / 300) * 1.5; 
         } else if (ent.enemyVariant === 'SPIDER') {
-             const yOffset = Math.sin(Date.now() / 500) * 80;
+             const yOffset = Math.sin(timeRef.current / 500) * 80;
              ent.pos.y = (ent.initialY || ent.pos.y) + yOffset;
         } else if (ent.enemyVariant === 'MUMMY') {
              ent.pos.x += ent.vel.x * 0.5; 
@@ -1038,7 +960,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                       if (dist < 800 && dist > 100) shouldSpawn = true;
                   }
 
-                  if (shouldSpawn) {
+                  if (shouldSpawn && canSpawnerSpawn(entities, ent)) {
                       spawnEnemy(ent);
                       ent.timeUntilSpawn = 0;
                   }
@@ -1049,13 +971,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       if (checkCollision(player, ent)) {
         if (ent.type === EntityType.COIN) {
           ent.isDead = true;
-          setGameState(prev => ({ ...prev, score: prev.score + 100, coinsCollected: prev.coinsCollected + 1 }));
+          queueStatsUpdate({ score: 100, coins: 1 });
           audio.playCoin();
         } else if (ent.type === EntityType.WINE) {
           ent.isDead = true;
           player.drunkTimer = WINE_DURATION;
           audio.playPowerUp();
-          setGameState(prev => ({ ...prev, score: prev.score + 500 }));
+          queueStatsUpdate({ score: 500 });
           for (let k = 0; k < 20; k++) {
              spawnParticle({
                  x: player.pos.x + player.size.x / 2, y: player.pos.y + player.size.y / 2,
@@ -1109,9 +1031,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
           if (hitFromTop) {
             ent.isDead = true;
             player.vel.y = JUMP_FORCE / 2; 
-            setGameState(prev => ({ ...prev, score: prev.score + 200 }));
+            queueStatsUpdate({ score: 200 });
             audio.playKill();
-            addShake(5);
+            addShake(cameraRef.current, 5);
             hitStopRef.current = 4; 
           } else {
              if (!player.isInvulnerable) handleDamage(player);
@@ -1120,36 +1042,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       }
     });
 
-    const targetLookAhead = player.facingRight ? 100 : -50;
-    cameraRef.current.lookAheadOffset += (targetLookAhead - cameraRef.current.lookAheadOffset) * 0.05;
-    
-    const targetCamX = player.pos.x - CANVAS_WIDTH / 3 + cameraRef.current.lookAheadOffset;
-    cameraRef.current.x += (targetCamX - cameraRef.current.x) * 0.05; 
-    
-    if (cameraRef.current.x < 0) cameraRef.current.x = 0;
-    const maxCamX = levelRef.current.width - CANVAS_WIDTH;
-    if (cameraRef.current.x > maxCamX) cameraRef.current.x = maxCamX;
+    updateCameraFollow(cameraRef.current, player, levelRef.current.width);
   };
 
   const draw = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const physicalWidth = Math.floor(CANVAS_WIDTH * dpr);
-    const physicalHeight = Math.floor(CANVAS_HEIGHT * dpr);
-
-    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
-        canvas.width = physicalWidth;
-        canvas.height = physicalHeight;
-    }
-
-    const ctx = canvas.getContext('2d');
+    const ctx = prepareCanvas2D(canvas, CANVAS_WIDTH, CANVAS_HEIGHT);
     if (!ctx) return;
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.imageSmoothingEnabled = false;
 
     const cameraX = Math.floor(cameraRef.current.x);
     const player = playerRef.current;
@@ -1183,7 +1084,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     // === 2. 绘制动态远景 (Parallax) ===
     
     // Sun Rays (Atmospheric)
-    if (weather === 'SUNNY' || weather === 'ARCTIC' || isTrainLevel) { // Added train level for sun rays
+    if (SUN_RAYS_ENABLED && (weather === 'SUNNY' || weather === 'ARCTIC' || isTrainLevel)) {
         ctx.save();
         sunRaysRef.current.forEach(ray => {
             const gradient = ctx.createLinearGradient(ray.x, 0, ray.x - Math.tan(ray.angle) * CANVAS_HEIGHT, CANVAS_HEIGHT);
@@ -1206,7 +1107,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         for (let i = 0; i < 50; i++) { 
             const starX = (i * 123 + cameraX * 0.05) % CANVAS_WIDTH; 
             const starY = (i * 87) % CANVAS_HEIGHT;
-            ctx.globalAlpha = Math.random() * 0.5 + 0.3;
+            ctx.globalAlpha = ((i * 17) % 10) / 10 * 0.5 + 0.3;
             ctx.fillRect(starX, starY, 1, 1);
         }
         ctx.globalAlpha = 1.0;
@@ -1293,13 +1194,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.save();
     ctx.translate(-cameraX + shakeX, shakeY); 
 
+    spatialGridRef.current.rebuild(entitiesRef.current);
+    const visibleEntities = spatialGridRef.current.queryViewport(
+      cameraX, CANVAS_WIDTH, levelRef.current.height, 200,
+    );
+
     // === 3. 绘制阴影 (Shadows Pass) ===
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-    entitiesRef.current.forEach(ent => {
+    visibleEntities.forEach(ent => {
         if (ent.isDead) return;
-        // 修复：剔除检测逻辑修复
-        const entRight = ent.pos.x + ent.size.x;
-        if (entRight < cameraX - 100 || ent.pos.x > cameraX + CANVAS_WIDTH + 100) return;
 
         if (ent.type === EntityType.PLAYER || ent.type === EntityType.ENEMY || ent.type === EntityType.TROPHY || ent.type === EntityType.CHECKPOINT) {
              ctx.beginPath();
@@ -1309,13 +1212,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     });
 
     // === 4. 绘制实体 (Entities Pass) ===
-    entitiesRef.current.forEach(ent => {
+    visibleEntities.forEach(ent => {
       if (ent.isDead) return;
       if (ent.type === EntityType.SPAWNER) return;
-      
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraX - 200 || ent.pos.x > cameraX + CANVAS_WIDTH + 200) return;
-
       if (ent.type === EntityType.PLATFORM) {
         if (ent.id.startsWith('end_gate')) {
              if (ent.id === 'end_gate_sakura') { 
@@ -1465,10 +1364,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       else if (ent.type === EntityType.WINE) {
         ctx.fillStyle = COLORS.wine; ctx.fillRect(ent.pos.x + 4, ent.pos.y + 10, 12, 20); ctx.fillRect(ent.pos.x + 7, ent.pos.y, 6, 10);
         ctx.fillStyle = COLORS.wineLabel; ctx.fillRect(ent.pos.x + 5, ent.pos.y + 15, 10, 8);
-        ent.pos.y += Math.sin(Date.now() / 150) * 0.3; 
+        ent.pos.y += Math.sin(timeRef.current / 150) * 0.3; 
       }
       else if (ent.type === EntityType.POTION) {
-        const bob = Math.sin(Date.now() / 300) * 2; ctx.fillStyle = COLORS.potion; ctx.beginPath(); ctx.arc(ent.pos.x + 10, ent.pos.y + 15 + bob, 8, 0, Math.PI * 2); ctx.fill();
+        const bob = Math.sin(timeRef.current / 300) * 2; ctx.fillStyle = COLORS.potion; ctx.beginPath(); ctx.arc(ent.pos.x + 10, ent.pos.y + 15 + bob, 8, 0, Math.PI * 2); ctx.fill();
         ctx.fillRect(ent.pos.x + 7, ent.pos.y + bob, 6, 10);
       }
       else if (ent.type === EntityType.SPIKE) {
@@ -1483,8 +1382,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              ctx.fillStyle = '#D97706'; ctx.fillRect(hx + 30, hy + 20, 20, 40);
              ctx.fillStyle = '#F59E0B'; ctx.beginPath(); ctx.arc(hx + 45, hy + 40, 2, 0, Math.PI*2); ctx.fill();
              ctx.fillStyle = '#FDE047'; ctx.fillRect(hx + 10, hy + 10, 15, 15); ctx.fillRect(hx + 55, hy + 10, 15, 15);
-             const smokeY = hy - 50 - (Date.now() % 1000) / 20;
-             ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(hx + 60, smokeY, 5 + Math.sin(Date.now()/200)*2, 0, Math.PI*2); ctx.fill();
+             const smokeY = hy - 50 - (timeRef.current % 1000) / 20;
+             ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(hx + 60, smokeY, 5 + Math.sin(timeRef.current/200)*2, 0, Math.PI*2); ctx.fill();
          } else {
              ctx.fillStyle = '#5D4037'; ctx.fillRect(ent.pos.x, ent.pos.y + 30, 40, 10);
              ctx.fillStyle = '#8D6E63'; ctx.fillRect(ent.pos.x - 5, ent.pos.y + 25, 50, 5);
@@ -1497,7 +1396,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       else if (ent.type === EntityType.ENEMY) {
          const cx = ent.pos.x + ent.size.x / 2;
          const cy = ent.pos.y + ent.size.y / 2;
-         const time = Date.now();
+         const time = timeRef.current;
 
          if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) {
              const isMovingRight = ent.vel.x > 0.1;
@@ -1610,12 +1509,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         // Glow for projectiles
         ctx.shadowBlur = 15; ctx.shadowColor = '#F43F5E';
         if (isLevel5) { 
-            ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((Date.now() / 50) % (Math.PI * 2));
+            ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((timeRef.current / 50) % (Math.PI * 2));
             ctx.fillStyle = COLORS.shovelHandle; ctx.fillRect(-5, -2, 10, 4); ctx.fillStyle = COLORS.shovel; ctx.fillRect(5, -6, 12, 12); ctx.restore();
         } else if (isLevel7) { 
             ctx.strokeStyle = COLORS.laserBeam; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(b.pos.x, b.pos.y); ctx.lineTo(b.pos.x + (b.vel.x > 0 ? 40 : -40), b.pos.y); ctx.stroke();
         } else if (isLevel6) { 
-             ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((Date.now() / 30) % (Math.PI * 2));
+             ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((timeRef.current / 30) % (Math.PI * 2));
              ctx.fillStyle = COLORS.shuriken; ctx.beginPath(); for(let i=0; i<4; i++) { ctx.rotate(Math.PI/2); ctx.moveTo(0, 0); ctx.lineTo(10, 3); ctx.lineTo(0, 6); ctx.lineTo(-10, 3); } ctx.fill(); ctx.restore();
         } else if (isLevel4) { 
             ctx.save(); ctx.translate(b.pos.x, b.pos.y); if (b.vel.x < 0) ctx.scale(-1, 1);
@@ -1632,7 +1531,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     });
 
     // 5. 绘制玩家 (Player)
-    if (player.isInvulnerable && Math.floor(Date.now() / 100) % 2 === 0) {
+    if (player.isInvulnerable && Math.floor(timeRef.current / 100) % 2 === 0) {
        ctx.globalAlpha = 0.5; 
     }
 
@@ -1667,7 +1566,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         ctx.fillStyle = COLORS.bear;
         if (isLevel4) { 
             // Mermaid Tail
-            const tailWiggle = Math.sin(Date.now() / 100) * 3; ctx.fillStyle = COLORS.tail; ctx.beginPath();
+            const tailWiggle = Math.sin(timeRef.current / 100) * 3; ctx.fillStyle = COLORS.tail; ctx.beginPath();
             if (player.facingRight) { ctx.moveTo(player.pos.x + 10, player.pos.y + 20); ctx.lineTo(player.pos.x - 10, player.pos.y + 35 + tailWiggle); ctx.lineTo(player.pos.x - 10, player.pos.y + 15 + tailWiggle); } 
             else { ctx.moveTo(player.pos.x + 20, player.pos.y + 20); ctx.lineTo(player.pos.x + 40, player.pos.y + 35 + tailWiggle); ctx.lineTo(player.pos.x + 40, player.pos.y + 15 + tailWiggle); }
             ctx.fill(); ctx.fillStyle = COLORS.bear; ctx.beginPath(); ctx.roundRect(player.pos.x, player.pos.y, player.size.x, 20, 5); ctx.fill();
@@ -1698,7 +1597,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              ctx.fillStyle = '#78350F'; ctx.fillRect(player.pos.x - 5, player.pos.y - 5, player.size.x + 10, 6); ctx.fillRect(player.pos.x + 5, player.pos.y - 12, player.size.x - 10, 8);
         } else if (isLevel6) {
              ctx.fillStyle = COLORS.ninjaSash; ctx.fillRect(player.pos.x, player.pos.y + 2, player.size.x, 4);
-             const tailY = player.pos.y + 4 + Math.sin(Date.now()/100)*2;
+             const tailY = player.pos.y + 4 + Math.sin(timeRef.current/100)*2;
              if (player.facingRight) { ctx.beginPath(); ctx.moveTo(player.pos.x, player.pos.y + 4); ctx.lineTo(player.pos.x - 15, tailY); ctx.lineTo(player.pos.x - 15, tailY + 5); ctx.fill(); } else { ctx.beginPath(); ctx.moveTo(player.pos.x + player.size.x, player.pos.y + 4); ctx.lineTo(player.pos.x + player.size.x + 15, tailY); ctx.lineTo(player.pos.x + player.size.x + 15, tailY + 5); ctx.fill(); }
         }
     }
@@ -1727,6 +1626,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     // === Post-Processing: Lighting Overlay ===
     const overlayCtx = lightingCanvasRef.current?.getContext('2d');
     if (overlayCtx && lightingCanvasRef.current) {
+        lightingFrameRef.current += 1;
+        const shouldRefreshLighting = lightingFrameRef.current % LIGHTING_UPDATE_INTERVAL === 0;
+
+        if (shouldRefreshLighting) {
         overlayCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         
         // Base Ambient Darkness
@@ -1770,7 +1673,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
 
         // Collectable Lights (Coins, Checkpoints)
-        entitiesRef.current.forEach(e => {
+        visibleEntities.forEach(e => {
             if (e.isDead) return;
             const ex = e.pos.x - cameraX + e.size.x/2 + shakeX;
             const ey = e.pos.y + e.size.y/2 + shakeY;
@@ -1787,6 +1690,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
 
         overlayCtx.globalCompositeOperation = 'source-over';
+        }
+
         ctx.drawImage(lightingCanvasRef.current, 0, 0);
     }
 
@@ -1820,7 +1725,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         ctx.fillStyle = '#FFF'; ctx.font = '10px "Press Start 2P"'; ctx.textAlign = 'center'; ctx.fillText("BOSS", barX + barWidth/2, barY - 5);
     }
 
-    particlePoolRef.current.forEach(p => {
+    particlePoolRef.current.pool.forEach(p => {
         if (!p.active) return;
         if (p.isScreenSpace) {
             // 屏幕空间绘制（雨/雪）
@@ -1841,40 +1746,55 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             } else if (p.alpha) { 
                 ctx.fillStyle = p.color || '#FFF'; ctx.globalAlpha = p.alpha; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
             } else { 
-                ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
+                ctx.fillStyle = p.color || '#FFF'; ctx.globalAlpha = p.life; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
             }
         }
     });
     
-    if (activeCheckpointRef.current && timeRef.current < 200) {
-        ctx.fillStyle = '#FFF';
-        ctx.font = '16px "Press Start 2P"';
-        ctx.textAlign = 'center';
-        ctx.fillText("CHECKPOINT!", CANVAS_WIDTH/2, 100);
-        ctx.textAlign = 'left';
-    }
+    drawCheckpointOverlay(
+      ctx,
+      CANVAS_WIDTH,
+      TILE_SIZE,
+      player.pos.x,
+      entitiesRef.current,
+      !!(activeCheckpointRef.current && timeRef.current < 200),
+    );
 
     ctx.restore();
   };
 
   const loop = () => {
-    update();
-    draw();
-    requestRef.current = requestAnimationFrame(loop);
+    if (gameStatusRef.current === GameStatus.PLAYING) {
+      update();
+      draw();
+      requestRef.current = requestAnimationFrame(loop);
+    }
   };
 
   useEffect(() => {
-    requestRef.current = requestAnimationFrame(loop);
+    gameStatusRef.current = gameState.status;
+    if (gameState.status === GameStatus.PLAYING) {
+      requestRef.current = requestAnimationFrame(loop);
+    }
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, [gameState.status]);
 
-  const handleTouchStart = (key: string) => { keysRef.current[key] = true; };
-  const handleTouchEnd = (key: string) => { keysRef.current[key] = false; };
+  const handleTouchStart = (key: string, e?: React.TouchEvent) => {
+    e?.preventDefault();
+    keysRef.current[key] = true;
+    if (key === 'Space' || key === 'ArrowUp') {
+      playerRef.current.jumpBufferTimer = JUMP_BUFFER;
+    }
+  };
+  const handleTouchEnd = (key: string, e?: React.TouchEvent) => {
+    e?.preventDefault();
+    keysRef.current[key] = false;
+  };
 
   return (
-    <div className="relative w-full max-w-[800px] mx-auto">
+    <div className="relative w-full max-w-[800px] mx-auto touch-none">
         <canvas
         ref={canvasRef}
         width={CANVAS_WIDTH}
@@ -1889,36 +1809,38 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                 <div className="flex gap-4">
                     <button 
                         className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-white/40 touch-none"
-                        onTouchStart={() => handleTouchStart('ArrowLeft')}
-                        onTouchEnd={() => handleTouchEnd('ArrowLeft')}
+                        onTouchStart={(e) => handleTouchStart('ArrowLeft', e)}
+                        onTouchEnd={(e) => handleTouchEnd('ArrowLeft', e)}
                     >
                         <ArrowLeft className="w-8 h-8 text-white" />
                     </button>
                     <button 
                         className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-white/40 touch-none"
-                        onTouchStart={() => handleTouchStart('ArrowRight')}
-                        onTouchEnd={() => handleTouchEnd('ArrowRight')}
+                        onTouchStart={(e) => handleTouchStart('ArrowRight', e)}
+                        onTouchEnd={(e) => handleTouchEnd('ArrowRight', e)}
                     >
                         <ArrowRight className="w-8 h-8 text-white" />
                     </button>
                 </div>
-                <div className="flex gap-4">
+                <div className="flex gap-3 items-end">
+                    <button 
+                        className="w-14 h-14 bg-slate-500/30 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-slate-500/50 touch-none"
+                        onTouchStart={(e) => handleTouchStart('ArrowDown', e)}
+                        onTouchEnd={(e) => handleTouchEnd('ArrowDown', e)}
+                    >
+                        <ArrowDown className="w-7 h-7 text-white" />
+                    </button>
                     <button 
                         className="w-16 h-16 bg-red-500/30 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-red-500/50 touch-none"
-                        onTouchStart={() => {
-                            keysRef.current['KeyF'] = true;
-                            setTimeout(() => keysRef.current['KeyF'] = false, 100);
-                        }}
+                        onTouchStart={(e) => handleTouchStart('KeyF', e)}
+                        onTouchEnd={(e) => handleTouchEnd('KeyF', e)}
                     >
                         <Crosshair className="w-8 h-8 text-white" />
                     </button>
                     <button 
                         className="w-16 h-16 bg-blue-500/30 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-blue-500/50 touch-none"
-                        onTouchStart={() => {
-                            keysRef.current['Space'] = true;
-                            playerRef.current.jumpBufferTimer = JUMP_BUFFER;
-                        }}
-                        onTouchEnd={() => handleTouchEnd('Space')}
+                        onTouchStart={(e) => handleTouchStart('Space', e)}
+                        onTouchEnd={(e) => handleTouchEnd('Space', e)}
                     >
                         <ArrowUp className="w-8 h-8 text-white" />
                     </button>

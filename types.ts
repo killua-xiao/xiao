@@ -74,6 +74,7 @@ export interface Entity {
   spawnCooldown?: number; // 生成冷却时间（帧数）
   timeUntilSpawn?: number;// 距离下次生成的计时器
   spawnVariant?: EnemyVariant; // 生成的怪物类型
+  spawnMaxAlive?: number; // 该刷怪点同屏存活上限
   
   // 存档点属性
   isChecked?: boolean; // 是否已激活
@@ -123,4 +124,5 @@ export interface GameState {
   lives: number;            // 当前生命
   maxLives: number;         // 最大生命上限（可动态增加）
   coinsCollected: number;   // 金币收集数量
+  reviveCount: number;      // 本局已复活次数（影响复活成本）
 }

@@ -8,12 +8,12 @@
  * 仅负责 React 侧的 HUD 渲染、关卡路由以及得分与隐藏秘籍的监听。
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameCanvas } from './components/GameCanvas';
 import { GameStatus, GameState } from './types';
 import { levels } from './levels';
 import { Heart, Coins, Trophy, Skull, Star, Trees, Zap, Sparkles, Crown, Mountain, Home, Play, Map, Gamepad2, Move, Target, ArrowUpFromLine } from 'lucide-react';
-import { MAX_HEALTH, REVIVE_COST } from './constants';
+import { MAX_HEALTH, REVIVE_COST, REVIVE_COST_ESCALATION } from './constants';
 import { audio } from './audio';
 
 /**
@@ -26,6 +26,7 @@ const INITIAL_STATE: GameState = {
   lives: MAX_HEALTH, 
   maxLives: MAX_HEALTH, // New dynamic max health state
   coinsCollected: 0,
+  reviveCount: 0,
 };
 
 // --- CINEMATIC COMPONENT ---
@@ -182,11 +183,14 @@ const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
   const [highScore, setHighScore] = useState(0);
   const [gameSessionId, setGameSessionId] = useState(0); // Used to force component remount
-  const [cheatBuffer, setCheatBuffer] = useState(""); // Buffer for cheat code
+  const cheatBufferRef = useRef("");
 
   useEffect(() => {
     const saved = localStorage.getItem('bear_adventure_highscore');
-    if (saved) setHighScore(parseInt(saved));
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!Number.isNaN(parsed) && parsed >= 0) setHighScore(parsed);
+    }
   }, []);
 
   useEffect(() => {
@@ -210,12 +214,12 @@ const App: React.FC = () => {
           }
 
           if (gameState.status === GameStatus.CREDITS) {
-              const newBuffer = (cheatBuffer + e.key).slice(-8); // Keep last 8 chars
-              setCheatBuffer(newBuffer);
+              const newBuffer = (cheatBufferRef.current + e.key).slice(-8);
+              cheatBufferRef.current = newBuffer;
               
               if (newBuffer === "20181018") {
                   audio.playPowerUp();
-                  // Start Hidden Level 999
+                  cheatBufferRef.current = "";
                   startGame(999); 
               }
           }
@@ -223,7 +227,7 @@ const App: React.FC = () => {
       
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [gameState.status, cheatBuffer]);
+  }, [gameState.status]);
 
   // PAUSE ON BLUR
   useEffect(() => {
@@ -244,8 +248,7 @@ const App: React.FC = () => {
     audio.init(); 
     setGameSessionId(prev => prev + 1); 
     
-    // Reset buffer
-    setCheatBuffer("");
+    cheatBufferRef.current = "";
 
     // Only play intro for the first level
     if (levelId === 1) {
@@ -315,11 +318,13 @@ const App: React.FC = () => {
   };
 
   const handleRevive = () => {
-    if (gameState.coinsCollected >= REVIVE_COST) {
+    const cost = REVIVE_COST + gameState.reviveCount * REVIVE_COST_ESCALATION;
+    if (gameState.coinsCollected >= cost) {
         setGameState(prev => ({
             ...prev,
             lives: prev.maxLives, 
-            coinsCollected: prev.coinsCollected - REVIVE_COST,
+            coinsCollected: prev.coinsCollected - cost,
+            reviveCount: prev.reviveCount + 1,
             status: GameStatus.PLAYING
         }));
     }
@@ -398,12 +403,8 @@ const App: React.FC = () => {
 
         {/* MENU - REDESIGNED */}
         {gameState.status === GameStatus.MENU && (
-          <div className="absolute inset-0 flex flex-col justify-between items-center z-10 bg-[url('https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=2670&auto=format&fit=crop')] bg-cover bg-center overflow-hidden">
-            {/* Clean Dark Overlay */}
+          <div className="absolute inset-0 flex flex-col justify-between items-center z-10 menu-bg overflow-hidden">
             <div className="absolute inset-0 bg-black/20 pointer-events-none"></div>
-            
-            {/* Subtle Texture */}
-            <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] pointer-events-none"></div>
 
             {/* --- TOP SECTION: TITLE LOGO --- */}
             <div className="relative z-20 mt-16 flex flex-col items-center">
@@ -506,7 +507,9 @@ const App: React.FC = () => {
         )}
 
         {/* REVIVE PROMPT */}
-        {gameState.status === GameStatus.REVIVE_PROMPT && (
+        {gameState.status === GameStatus.REVIVE_PROMPT && (() => {
+          const reviveCost = REVIVE_COST + gameState.reviveCount * REVIVE_COST_ESCALATION;
+          return (
           <div className="absolute inset-0 bg-red-900/90 flex flex-col items-center justify-center text-center rounded-lg z-10">
              <Heart className="w-16 h-16 text-red-500 mb-4 animate-pulse" />
              <h2 className="pixel-font text-3xl text-white mb-4">你受伤了!</h2>
@@ -515,14 +518,14 @@ const App: React.FC = () => {
              <div className="flex flex-col gap-4 w-64">
                 <button 
                   onClick={handleRevive}
-                  disabled={gameState.coinsCollected < REVIVE_COST}
+                  disabled={gameState.coinsCollected < reviveCost}
                   className={`border-b-4 font-bold py-3 px-4 rounded-lg pixel-font transition-all ${
-                    gameState.coinsCollected >= REVIVE_COST 
+                    gameState.coinsCollected >= reviveCost 
                     ? 'bg-yellow-400 text-yellow-900 hover:bg-yellow-300 border-yellow-600 cursor-pointer' 
                     : 'bg-gray-600 text-gray-400 border-gray-700 cursor-not-allowed opacity-50'
                   }`}
                 >
-                  原地复活 ({REVIVE_COST} 金币)
+                  原地复活 ({reviveCost} 金币)
                 </button>
                 
                 <button 
@@ -533,11 +536,12 @@ const App: React.FC = () => {
                 </button>
              </div>
              
-             {gameState.coinsCollected < REVIVE_COST && (
+             {gameState.coinsCollected < reviveCost && (
                 <p className="text-red-300 text-xs mt-2">金币不足!</p>
              )}
           </div>
-        )}
+          );
+        })()}
 
         {/* GAME OVER */}
         {gameState.status === GameStatus.GAME_OVER && (

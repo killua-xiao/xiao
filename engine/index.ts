@@ -7,3 +7,5 @@ export * from './entityLifecycle';
 export * from './spawnEnemy';
 export * from './input';
 export * from './spawner';
+export * from './renderHelpers';
+export * from './levelValidation';

@@ -15,11 +15,12 @@ import { audio } from '../audio';
 import { ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Crosshair } from 'lucide-react';
 import {
   ParticlePool, MAX_PARTICLES, StatsBuffer, SpatialGrid,
-  checkCollision, isInCameraRange,
+  checkCollision, checkSweptCollision, isInCameraRange,
   addShake, updateCameraDecay, updateCameraFollow,
   countLiveEnemies, compactDeadEntities, spawnEnemy as spawnEnemyFromSpawner,
   canSpawnerSpawn,
   pollGamepadState, isMoveLeft, isMoveRight, isMoveUp, isMoveDown, isJumpHeld, isFireHeld,
+  prepareCanvas2D, drawCheckpointOverlay,
   CameraState, Cloud, Tree, Planet, CaveSpike, SunRay, Trail,
 } from '../engine';
 
@@ -647,6 +648,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
+        const prevX = b.pos.x;
         b.pos.x += b.vel.x;
         
         // 旋转动画 (Shuriken/Shovel)
@@ -671,7 +673,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             if (ent.type === EntityType.ENEMY) {
                 if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) continue;
 
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true;
                     ent.health = (ent.health || 1) - 1;
                     if (ent.health <= 0) {
@@ -699,7 +705,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     break;
                 }
             } else if (ent.type === EntityType.PLATFORM) {
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true; 
                     spawnParticle({
                         x: b.pos.x, y: b.pos.y, speedX: -b.vel.x * 0.2, speedY: (Math.random()-0.5)*4,
@@ -708,7 +718,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     break;
                 }
             } else if (ent.type === EntityType.BREAKABLE_WALL) {
-                if (checkCollision(b, ent)) {
+                if (checkSweptCollision(
+                  { pos: { x: prevX, y: b.pos.y }, size: b.size },
+                  { x: b.vel.x, y: 0 },
+                  ent,
+                ) || checkCollision(b, ent)) {
                     bulletHit = true;
                     if (isTombLevel) {
                          ent.isDead = true;
@@ -1035,21 +1049,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const physicalWidth = Math.floor(CANVAS_WIDTH * dpr);
-    const physicalHeight = Math.floor(CANVAS_HEIGHT * dpr);
-
-    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
-        canvas.width = physicalWidth;
-        canvas.height = physicalHeight;
-    }
-
-    const ctx = canvas.getContext('2d');
+    const ctx = prepareCanvas2D(canvas, CANVAS_WIDTH, CANVAS_HEIGHT);
     if (!ctx) return;
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.imageSmoothingEnabled = false;
 
     const cameraX = Math.floor(cameraRef.current.x);
     const player = playerRef.current;
@@ -1750,32 +1751,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         }
     });
     
-    if (activeCheckpointRef.current && timeRef.current < 200) {
-        ctx.fillStyle = '#FFF';
-        ctx.font = '16px "Press Start 2P"';
-        ctx.textAlign = 'center';
-        ctx.fillText("CHECKPOINT!", CANVAS_WIDTH/2, 100);
-        ctx.textAlign = 'left';
-    }
-
-    const nextCheckpoint = entitiesRef.current.find(
-      e => e.type === EntityType.CHECKPOINT && !e.isChecked && !e.isDead,
+    drawCheckpointOverlay(
+      ctx,
+      CANVAS_WIDTH,
+      TILE_SIZE,
+      player.pos.x,
+      entitiesRef.current,
+      !!(activeCheckpointRef.current && timeRef.current < 200),
     );
-    if (nextCheckpoint) {
-      const dist = nextCheckpoint.pos.x - player.pos.x;
-      if (Math.abs(dist) > 80 && Math.abs(dist) < 2500) {
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(CANVAS_WIDTH / 2 - 90, 6, 180, 24);
-        ctx.fillStyle = '#FACC15';
-        ctx.font = '10px "Press Start 2P"';
-        ctx.textAlign = 'center';
-        const label = dist > 0
-          ? `存档点 → ${Math.round(dist / TILE_SIZE)}m`
-          : `← 存档点 ${Math.round(-dist / TILE_SIZE)}m`;
-        ctx.fillText(label, CANVAS_WIDTH / 2, 22);
-        ctx.textAlign = 'left';
-      }
-    }
 
     ctx.restore();
   };

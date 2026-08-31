@@ -53,6 +53,19 @@
 
 碰撞 broad-phase 使用均匀网格（`engine/collision.ts` 中的 `SpatialGrid`），单元大小与 `TILE_SIZE` 对齐。每帧重建网格后，子弹、玩家与实体的交互仅查询相关单元内的候选对象，避免对全关卡实体做 O(n) 遍历。
 
+### 3.5 扫掠 AABB (Swept Collision)
+
+高速子弹在每帧位移较大时，使用 `checkSweptCollision` 沿运动轨迹做 broad-phase 检测，避免穿透薄墙或小型敌人。
+
+### 3.6 输入与刷怪模块
+
+- `engine/input.ts` — 键盘 / 手柄 / 触屏输入归一化
+- `engine/spawner.ts` — 刷怪笼同屏存活上限
+- `engine/renderHelpers.ts` — Canvas DPR 适配与存档点 HUD
+- `engine/levelValidation.ts` — 开发模式下关卡数据 invariant 校验
+
+单元测试位于 `engine/*.test.ts`，运行 `npm run test`。
+
 ---
 
 ## 4. 目录结构指南 (Directory Structure)
@@ -60,7 +73,11 @@
 ```text
 /
 ├── engine/              # 【新增】可复用引擎模块
-│   ├── collision.ts     # AABB 检测 + SpatialGrid 空间网格
+│   ├── collision.ts     # AABB + 扫掠检测 + SpatialGrid
+│   ├── input.ts         # 统一输入 helpers
+│   ├── spawner.ts       # 刷怪笼存活上限
+│   ├── renderHelpers.ts # Canvas 适配与 HUD 绘制
+│   ├── levelValidation.ts
 │   ├── ParticlePool.ts  # 粒子对象池
 │   ├── StatsBuffer.ts   # 分数/金币批量同步缓冲
 │   ├── camera.ts        # 相机跟随与震屏

@@ -1,4 +1,4 @@
-import { Entity } from '../types';
+import { Entity, Vector } from '../types';
 
 /** Axis-aligned bounding box overlap test. */
 export function checkCollision(a: Entity, b: Entity): boolean {
@@ -7,6 +7,25 @@ export function checkCollision(a: Entity, b: Entity): boolean {
     a.pos.x + a.size.x > b.pos.x &&
     a.pos.y < b.pos.y + b.size.y &&
     a.pos.y + a.size.y > b.pos.y
+  );
+}
+
+/** Swept AABB test — detects overlap along a movement segment (prevents tunneling). */
+export function checkSweptCollision(
+  box: { pos: Vector; size: Vector },
+  velocity: Vector,
+  target: Entity,
+): boolean {
+  const minX = velocity.x >= 0 ? box.pos.x : box.pos.x + velocity.x;
+  const maxX = velocity.x >= 0 ? box.pos.x + box.size.x + velocity.x : box.pos.x + box.size.x;
+  const minY = velocity.y >= 0 ? box.pos.y : box.pos.y + velocity.y;
+  const maxY = velocity.y >= 0 ? box.pos.y + box.size.y + velocity.y : box.pos.y + box.size.y;
+
+  return (
+    minX < target.pos.x + target.size.x &&
+    maxX > target.pos.x &&
+    minY < target.pos.y + target.size.y &&
+    maxY > target.pos.y
   );
 }
 

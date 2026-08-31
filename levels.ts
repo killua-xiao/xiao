@@ -1,6 +1,7 @@
 
 import { LevelData, EntityType, EnemyVariant } from './types';
 import { CANVAS_HEIGHT, COLORS, TILE_SIZE } from './constants';
+import { assertValidLevels } from './engine/levelValidation';
 
 const createPlatform = (x: number, y: number, w: number, h: number, id: string) => ({
   id, type: EntityType.PLATFORM, pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE }, size: { x: w * TILE_SIZE, y: h * TILE_SIZE }, vel: { x: 0, y: 0 }
@@ -529,3 +530,7 @@ export const levels: LevelData[] = [
       ]
   }
 ];
+
+if (import.meta.env.DEV) {
+  assertValidLevels(levels);
+}

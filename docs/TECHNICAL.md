@@ -18,7 +18,7 @@
 
 ### 2.1 游戏主循环 (Main Game Loop)
 位于 `components/GameCanvas.tsx`，核心方法为 `update()`（物理逻辑）与 `draw()`（视觉渲染）。
-- **帧率解耦**：物理相关的运算虽然绑定在 `rAF` 之下，但利用了 `hitStopRef` 来实现受击时的 "顿帧" 冲击效果（Hitstop），赋予了打击感。
+- **帧率解耦**：物理以固定 `60Hz` 时间步运行（`FIXED_DT_MS`），渲染跟随显示器刷新率。受击时仍用 `hitStopRef` 做顿帧。
 - **独立时间步长**：通过 `timeRef` 管理系统运行的刻度，用于处理子弹冷却、粒子生命周期衰减、云朵视差滚动等。
 
 ### 2.2 ECS (Entity-Component-System) 微架构思想
@@ -56,13 +56,19 @@
 ```text
 /
 ├── components/
-│   └── GameCanvas.tsx   # 【核心】Canvas 渲染引擎、物理判定、控制逻辑
-├── audio.ts             # Web Audio API 封装，基于正弦波生成 8bit 音效
-├── constants.ts         # 游戏全局常数字典（重力、速度、尺寸基准）
-├── levels.ts            # 关卡工厂 (纯数据)，包含 7个大地图+1个隐藏地图
-├── types.ts             # TypeScript 类型定于，TS接口与枚举声明
-├── App.tsx              # 【核心】游戏状态机、React UI 界面与生命周期管理
-└── index.tsx            # Vite 默认的 React 根挂载层
+│   └── GameCanvas.tsx   # Canvas 主循环编排（固定 60Hz 物理步 + 渲染）
+├── game/
+│   ├── collision.ts     # AABB 碰撞、视口剔除、实体深拷贝
+│   ├── enemies.ts       # 敌人数值表（关卡放置与刷怪笼共用）
+│   ├── particles.ts     # 粒子对象池
+│   ├── input.ts         # 键盘 / WASD / 手柄统一成数字输入
+│   └── stars.ts         # 预计算星空，避免每帧随机
+├── audio.ts             # Web Audio API 封装
+├── constants.ts         # 物理常数与固定时间步
+├── levels.ts            # 关卡数据
+├── types.ts             # 接口与枚举
+├── App.tsx              # 游戏状态机与 HUD
+└── index.tsx            # React 根挂载
 ```
 
 ---

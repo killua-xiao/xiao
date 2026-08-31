@@ -473,7 +473,7 @@ const App: React.FC = () => {
                 <div className="flex gap-4 text-[10px] text-gray-300 font-bold bg-black/60 px-4 py-2 rounded-full border border-white/10 backdrop-blur-md">
                     <div className="flex items-center gap-1">
                         <Move className="w-3 h-3 text-yellow-400" /> 
-                        <span>移动: 方向键</span>
+                        <span>移动: 方向键 / WASD</span>
                     </div>
                     <div className="flex items-center gap-1">
                         <ArrowUpFromLine className="w-3 h-3 text-green-400" />

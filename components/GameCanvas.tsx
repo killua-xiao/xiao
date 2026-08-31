@@ -1,16 +1,21 @@
 
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { 
-  CANVAS_WIDTH, CANVAS_HEIGHT, GRAVITY, TILE_SIZE, COLORS, PLAYER_WIDTH, PLAYER_HEIGHT, 
+  CANVAS_WIDTH, CANVAS_HEIGHT, GRAVITY, COLORS, PLAYER_WIDTH, PLAYER_HEIGHT, 
   MOVE_SPEED, JUMP_FORCE, TERMINAL_VELOCITY, PROJECTILE_SPEED, PROJECTILE_SIZE, SHOOT_COOLDOWN, 
   WINE_DURATION, WINE_SPEED_MULTIPLIER, WINE_JUMP_MULTIPLIER,
   ACCELERATION, FRICTION, AIR_FRICTION, COYOTE_TIME, JUMP_BUFFER,
-  SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS
+  SWIM_SPEED, WATER_FRICTION, VISUALS, FIXED_DT_MS, MAX_PHYSICS_STEPS
 } from '../constants';
-import { Entity, Player, EntityType, GameStatus, GameState, EnemyVariant } from '../types';
+import { Entity, Player, EntityType, GameStatus, GameState } from '../types';
 import { levels } from '../levels';
-import { audio } from '../audio';
-import { ArrowLeft, ArrowRight, ArrowUp, Crosshair, Gamepad2 } from 'lucide-react';
+import { audio, bgmTypeForWeather } from '../audio';
+import { checkCollision, isOffCamera, cloneEntities } from '../game/collision';
+import { spawnEnemyFromSpawner, isFamilyVariant } from '../game/enemies';
+import { createParticlePool, resetParticlePool, spawnParticle as spawnPooledParticle, countActiveParticles, updateParticles, MAX_PARTICLES } from '../game/particles';
+import { pollGamepad, readDigitalInput, isJumpCode, KeyMap } from '../game/input';
+import { STAR_FIELD } from '../game/stars';
+import { ArrowLeft, ArrowRight, ArrowUp, Crosshair } from 'lucide-react';
 
 // --- 接口定义 ---
 interface GameCanvasProps {
@@ -32,15 +37,6 @@ interface Planet {
 }
 interface CaveSpike { x: number; height: number; type: 'CEILING' | 'FLOOR'; width: number; }
 interface SunRay { x: number; width: number; angle: number; speed: number; alpha: number; }
-
-// --- 对象池优化：粒子系统 ---
-interface Particle { 
-    active: boolean;
-    x: number; y: number; speedX: number; speedY: number; 
-    size: number; life: number; color?: string; alpha?: number;
-    isScreenSpace?: boolean; // 新增：标记粒子是否在屏幕空间（用于雨雪）
-}
-const MAX_PARTICLES = 300;
 
 // 运动轨迹 (Motion Trail)
 interface Trail {
@@ -79,20 +75,22 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     animTimer: 0
   });
 
-  const entitiesRef = useRef<Entity[]>(JSON.parse(JSON.stringify(levelRef.current.entities)));
+  const entitiesRef = useRef<Entity[]>(cloneEntities(levelRef.current.entities));
   const bulletsRef = useRef<Entity[]>([]); 
   const cameraRef = useRef({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); 
-  const keysRef = useRef<{ [key: string]: boolean }>({}); 
+  const keysRef = useRef<KeyMap>({}); 
   const timeRef = useRef<number>(0); 
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
+  const lastTimeRef = useRef(0);
+  const accumulatorRef = useRef(0);
+  const updateRef = useRef<() => void>(() => {});
+  const drawRef = useRef<() => void>(() => {});
   
   // --- 新增：游戏手感优化 Refs ---
   const hitStopRef = useRef<number>(0); // 顿帧计时器
   const gamePadIndexRef = useRef<number | null>(null); // 手柄索引
-  const particlePoolRef = useRef<Particle[]>(
-      new Array(MAX_PARTICLES).fill(null).map(() => ({ 
-          active: false, x: 0, y: 0, speedX: 0, speedY: 0, size: 0, life: 0 
-      }))
-  );
+  const particlePoolRef = useRef(createParticlePool());
   
   // --- 视觉特效 Refs ---
   const trailsRef = useRef<Trail[]>([]);
@@ -102,80 +100,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   const caveSpikesRef = useRef<CaveSpike[]>([]); 
   const sunRaysRef = useRef<SunRay[]>([]);
 
-  // --- 粒子系统方法 ---
-  const spawnParticle = (opts: Partial<Omit<Particle, 'active'>>) => {
-      const pool = particlePoolRef.current;
-      for (let i = 0; i < pool.length; i++) {
-          if (!pool[i].active) {
-              pool[i] = { 
-                  active: true, 
-                  x: opts.x || 0, 
-                  y: opts.y || 0, 
-                  speedX: opts.speedX || 0, 
-                  speedY: opts.speedY || 0, 
-                  size: opts.size || 2, 
-                  life: opts.life || 1, 
-                  color: opts.color, 
-                  alpha: opts.alpha,
-                  isScreenSpace: opts.isScreenSpace || false
-              };
-              return;
-          }
-      }
-  };
+  const spawnParticle = (opts: Parameters<typeof spawnPooledParticle>[1]) =>
+      spawnPooledParticle(particlePoolRef.current, opts);
 
   // --- 挤压与拉伸助手 ---
   const squashAndStretch = (scaleX: number, scaleY: number) => {
       playerRef.current.renderScale.x = scaleX;
       playerRef.current.renderScale.y = scaleY;
   };
-
-  // --- 手柄检测 ---
-  const pollGamepad = () => {
-    const gamepads = navigator.getGamepads();
-    if (!gamepads) return;
-
-    if (gamePadIndexRef.current === null) {
-        for (const gp of gamepads) {
-            if (gp && gp.connected) {
-                gamePadIndexRef.current = gp.index;
-                break;
-            }
-        }
-    }
-
-    if (gamePadIndexRef.current !== null) {
-        const gp = gamepads[gamePadIndexRef.current];
-        if (gp) {
-            if (gp.axes[0] < -0.5) keysRef.current['ArrowLeft'] = true;
-            else if (gp.axes[0] > 0.5) keysRef.current['ArrowRight'] = true;
-            else {
-                if (!keysRef.current['KeyA'] && !keysRef.current['ArrowLeft_K']) keysRef.current['ArrowLeft'] = false;
-                if (!keysRef.current['KeyD'] && !keysRef.current['ArrowRight_K']) keysRef.current['ArrowRight'] = false;
-            }
-            if (gp.buttons[14].pressed) keysRef.current['ArrowLeft'] = true;
-            if (gp.buttons[15].pressed) keysRef.current['ArrowRight'] = true;
-
-            if (gp.buttons[0].pressed) {
-                if (!keysRef.current['Space_Held']) { 
-                    keysRef.current['Space'] = true;
-                    playerRef.current.jumpBufferTimer = JUMP_BUFFER;
-                    keysRef.current['Space_Held'] = true;
-                }
-            } else {
-                keysRef.current['Space'] = false;
-                keysRef.current['Space_Held'] = false;
-            }
-
-            if (gp.buttons[2].pressed || gp.buttons[1].pressed) {
-                keysRef.current['KeyF'] = true;
-            } else {
-                keysRef.current['KeyF'] = false;
-            }
-        }
-    }
-  };
-
 
   // --- 初始化环境装饰 (Mount时执行) ---
   useEffect(() => {
@@ -224,7 +156,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         alpha: 0.1 + Math.random() * 0.2
     }));
 
-    particlePoolRef.current.forEach(p => p.active = false);
+    resetParticlePool(particlePoolRef.current);
     trailsRef.current = [];
   }, []);
 
@@ -294,7 +226,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     levelRef.current = newLevel;
     activeCheckpointRef.current = null; // 重置存档点
 
-    entitiesRef.current = JSON.parse(JSON.stringify(newLevel.entities));
+    entitiesRef.current = cloneEntities(newLevel.entities);
     bulletsRef.current = [];
     playerRef.current = {
       id: 'hero',
@@ -319,16 +251,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     cameraRef.current.x = 0;
     cameraRef.current.shake = 0;
     cameraRef.current.lookAheadOffset = 0;
-    particlePoolRef.current.forEach(p => p.active = false);
+    resetParticlePool(particlePoolRef.current);
     trailsRef.current = [];
     timeRef.current = 0;
     
-    let bgmType: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL';
-    if (newLevel.weather === 'CAVE') bgmType = 'CAVE';
-    if (newLevel.weather === 'TOMB') bgmType = 'TOMB';
-    if (newLevel.weather === 'SPACE') bgmType = 'SPACE';
-    if (newLevel.weather === 'ARCTIC') bgmType = 'WARM'; 
-    audio.startBGM(bgmType);
+    audio.startBGM(bgmTypeForWeather(newLevel.weather));
     
     return () => {
       audio.stopBGM();
@@ -336,15 +263,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   }, [levelId]);
 
   // --- 辅助函数 (提前定义) ---
-  const checkCollision = (rect1: Entity, rect2: Entity) => {
-    return (
-      rect1.pos.x < rect2.pos.x + rect2.size.x &&
-      rect1.pos.x + rect1.size.x > rect2.pos.x &&
-      rect1.pos.y < rect2.pos.y + rect2.size.y &&
-      rect1.pos.y + rect1.size.y > rect2.pos.y
-    );
-  };
-
   const addShake = (amount: number) => {
       cameraRef.current.shake = amount;
   };
@@ -395,12 +313,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        }
        keysRef.current = {}; 
        
-       let bgmType: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL';
-        if (levelRef.current.weather === 'CAVE') bgmType = 'CAVE';
-        if (levelRef.current.weather === 'TOMB') bgmType = 'TOMB';
-        if (levelRef.current.weather === 'SPACE') bgmType = 'SPACE';
-        if (levelRef.current.weather === 'ARCTIC') bgmType = 'WARM';
-        audio.startBGM(bgmType);
+       audio.startBGM(bgmTypeForWeather(levelRef.current.weather));
     } else {
        audio.stopBGM();
     }
@@ -413,7 +326,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if(e.code === 'ArrowLeft') keysRef.current['ArrowLeft_K'] = true;
         if(e.code === 'ArrowRight') keysRef.current['ArrowRight_K'] = true;
 
-        if (e.code === 'Space' || e.code === 'ArrowUp') {
+        if (isJumpCode(e.code)) {
             playerRef.current.jumpBufferTimer = JUMP_BUFFER;
         }
     };
@@ -435,62 +348,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   }, []);
 
   const spawnEnemy = (spawner: Entity) => {
-      const variant = spawner.spawnVariant || 'NORMAL';
-      let width = 30;
-      let height = 30;
-      let speed = 2;
-      let health = 1;
-      let color = COLORS.enemy;
-
-      if (variant === 'TANK') { width = 50; height = 50; speed = 1; health = 3; color = COLORS.enemyTank; } 
-      else if (variant === 'FAST') { width = 25; height = 25; speed = 4; health = 1; color = COLORS.enemyFast; } 
-      else if (variant === 'BAT' || variant === 'BIRD') { width = 30; height = 20; speed = 3; health = 1; color = variant === 'BIRD' ? COLORS.enemyBird : COLORS.enemyBat; } 
-      else if (variant === 'SLIME') { width = 30; height = 20; speed = 1; health = 2; color = COLORS.enemySlime; } 
-      else if (variant === 'FISH') { width = 35; height = 25; speed = 2.5; health = 1; color = COLORS.enemyFish; } 
-      else if (variant === 'SKELETON') { width = 25; height = 45; speed = 2; health = 2; color = COLORS.enemySkeleton; } 
-      else if (variant === 'MUMMY') { width = 30; height = 45; speed = 1; health = 4; color = COLORS.enemyMummy; } 
-      else if (variant === 'ZOMBIE') { width = 30; height = 45; speed = 1.5; health = 3; color = COLORS.enemyZombie; } 
-      else if (variant === 'SPIDER') { width = 30; height = 25; speed = 2; health = 1; color = COLORS.enemySpider; } 
-      else if (variant === 'ALIEN') { width = 25; height = 35; speed = 2; health = 2; color = COLORS.enemyAlien; } 
-      else if (variant === 'UFO') { width = 40; height = 25; speed = 4; health = 2; color = COLORS.enemyUfo; } 
-      else if (variant === 'METEOR') { width = 35; height = 35; speed = 4; health = 1; color = COLORS.meteor; }
-
-      const dir = Math.random() > 0.5 ? 1 : -1;
-      let spawnY = spawner.pos.y - height + spawner.size.y; 
-      
-      if (variant === 'BAT' || variant === 'BIRD' || variant === 'UFO') {
-          spawnY -= (variant === 'UFO' ? 100 + Math.random() * 50 : 100); 
-      }
-      if (variant === 'METEOR') {
-          spawnY = spawner.pos.y - 300 + Math.random() * 400;
-      }
-
-      const enemy: Entity = {
-        id: `spawned_${Date.now()}_${Math.random()}`,
-        type: EntityType.ENEMY,
-        pos: { x: spawner.pos.x, y: spawnY }, 
-        size: { x: width, y: height },
-        vel: { x: speed * dir, y: 0 },
-        patrolStart: spawner.pos.x - 400,
-        patrolEnd: spawner.pos.x + 400,
-        enemyVariant: variant,
-        health,
-        maxHealth: health,
-        color
-      };
-
-      if (variant === 'SPIDER') { enemy.vel.x = 0; enemy.vel.y = speed; enemy.initialY = spawnY; }
-      if (variant === 'METEOR') {
-          enemy.vel.x = -speed - Math.random() * 2; 
-          enemy.vel.y = (Math.random() - 0.5) * 1; 
-          enemy.patrolStart = -99999;
-          enemy.patrolEnd = 99999;
-      }
-
+      const enemy = spawnEnemyFromSpawner(spawner);
       entitiesRef.current.push(enemy);
-      
+
       const dist = Math.abs(spawner.pos.x - playerRef.current.pos.x);
-      if (dist < 800 && variant !== 'METEOR') { 
+      if (dist < 800 && enemy.enemyVariant !== 'METEOR') {
           audio.playRoar();
       }
   };
@@ -524,14 +386,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         treesRef.current.forEach(tree => {
              tree.x -= trainSpeed; 
              if (tree.x + tree.width < -100) {
-                 const rightMostX = Math.max(...treesRef.current.map(t => t.x), CANVAS_WIDTH);
+                 let rightMostX = CANVAS_WIDTH;
+                 for (let i = 0; i < treesRef.current.length; i++) {
+                     if (treesRef.current[i].x > rightMostX) rightMostX = treesRef.current[i].x;
+                 }
                  tree.x = rightMostX + 300 + Math.random() * 400; 
                  tree.height = 100 + Math.random() * 150;
                  tree.y = CANVAS_HEIGHT - 30; 
              }
         });
         
-        const activeParticles = particlePoolRef.current.filter(p => p.active).length;
+        const activeParticles = countActiveParticles(particlePoolRef.current);
         if (activeParticles < MAX_PARTICLES && Math.random() > 0.8) { 
             const spawnX = cameraRef.current.x + CANVAS_WIDTH + Math.random() * 100;
             spawnParticle({
@@ -569,7 +434,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
     }
 
-    const activeCount = particlePoolRef.current.filter(p => p.active).length;
+    let activeCount = countActiveParticles(particlePoolRef.current);
     if (activeCount < MAX_PARTICLES) {
         if (weather === 'SEA' && Math.random() > 0.9) { 
              const spawnX = cameraRef.current.x + Math.random() * CANVAS_WIDTH;
@@ -616,30 +481,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        });
     }
 
-    particlePoolRef.current.forEach(p => {
-        if (!p.active) return;
-        p.x += p.speedX;
-        p.y += p.speedY;
-        
-        if (p.color && !p.color.startsWith('rgba') && p.color !== '#D97706' && p.color !== '#FFFFFF') { 
-            p.life -= 0.05;
-            p.size *= 0.95; 
-        } else if (weather === 'SEA' && p.y < 0) {
-            p.active = false;
-        }
-
-        if (p.y > CANVAS_HEIGHT && weather !== 'SEA') {
-           if (p.isScreenSpace) {
-               // 循环雨雪
-               p.y = -10; 
-               p.x = Math.random() * CANVAS_WIDTH;
-           } else {
-               p.active = false;
-           }
-        } else if (p.life <= 0) {
-           p.active = false;
-        }
-    });
+    updateParticles(particlePoolRef.current, weather);
 
     // Update trails
     trailsRef.current.forEach(t => t.alpha -= 0.1);
@@ -653,11 +495,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         return; 
     }
 
-    pollGamepad();
+    pollGamepad(keysRef.current, gamePadIndexRef);
+    if (keysRef.current['JumpPressed']) {
+        playerRef.current.jumpBufferTimer = JUMP_BUFFER;
+        keysRef.current['JumpPressed'] = false;
+    }
 
     updateEnvironment();
 
-    if (gameState.status !== GameStatus.PLAYING) return;
+    if (gameStateRef.current.status !== GameStatus.PLAYING) return;
 
     const player = playerRef.current;
     const entities = entitiesRef.current;
@@ -667,7 +513,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const isSpaceLevel = weather === 'SPACE'; 
     const isTombLevel = weather === 'TOMB';
     const isArcticLevel = weather === 'ARCTIC';
-    const isHiddenLevel = levelId === 999;
+    const isHiddenLevel = levelRef.current.id === 999;
+    const input = readDigitalInput(keysRef.current);
 
     // Motion Trail Generation
     if (Math.abs(player.vel.x) > 4 || Math.abs(player.vel.y) > 4) {
@@ -718,7 +565,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     if (player.shootCooldown > 0) player.shootCooldown--;
     
     // 隐藏关禁止射击
-    if (!isHiddenLevel && !isArcticLevel && (keysRef.current['KeyF'] || keysRef.current['KeyJ']) && player.shootCooldown <= 0) {
+    if (!isHiddenLevel && !isArcticLevel && input.shoot && player.shootCooldown <= 0) {
         player.shootCooldown = SHOOT_COOLDOWN;
         if (player.drunkTimer > 0) player.shootCooldown = SHOOT_COOLDOWN / 2; 
 
@@ -743,7 +590,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         b.pos.x += b.vel.x;
         
         // 旋转动画 (Shuriken/Shovel)
-        if (levelId === 6 || levelId === 5) {
+        if (levelRef.current.id === 6 || levelRef.current.id === 5) {
             // Use velocity x to increment rotation stored in dummy variable if needed, 
             // or just use time in draw.
         }
@@ -765,7 +612,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             if (entRight < cameraRef.current.x - 100 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 100) continue;
 
             if (ent.type === EntityType.ENEMY) {
-                if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) continue;
+                if (isFamilyVariant(ent.enemyVariant)) continue;
 
                 if (checkCollision(b, ent)) {
                     bulletHit = true;
@@ -832,15 +679,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const isFreeFly = isSeaLevel || isSpaceLevel; 
 
     if (isFreeFly) {
-        if (keysRef.current['ArrowLeft']) {
+        if (input.left) {
             player.vel.x -= ACCELERATION;
             player.facingRight = false;
-        } else if (keysRef.current['ArrowRight']) {
+        } else if (input.right) {
             player.vel.x += ACCELERATION;
             player.facingRight = true;
         }
-        if (keysRef.current['ArrowUp']) player.vel.y -= ACCELERATION;
-        else if (keysRef.current['ArrowDown']) player.vel.y += ACCELERATION;
+        if (input.up) player.vel.y -= ACCELERATION;
+        else if (input.down) player.vel.y += ACCELERATION;
 
         player.vel.x *= WATER_FRICTION;
         player.vel.y *= WATER_FRICTION;
@@ -850,10 +697,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (player.vel.y < -SWIM_SPEED) player.vel.y = -SWIM_SPEED;
 
     } else {
-        if (keysRef.current['ArrowLeft']) {
+        if (input.left) {
             player.vel.x -= ACCELERATION;
             player.facingRight = false;
-        } else if (keysRef.current['ArrowRight']) {
+        } else if (input.right) {
             player.vel.x += ACCELERATION;
             player.facingRight = true;
         } else {
@@ -887,7 +734,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             }
         }
 
-        if (player.vel.y < 0 && !keysRef.current['Space'] && !keysRef.current['ArrowUp']) {
+        if (player.vel.y < 0 && !input.jump) {
             player.vel.y *= 0.5;
         }
 
@@ -903,10 +750,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     for (const ent of entities) {
       if (ent.isDead) continue; 
-      
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
+      if (isOffCamera(ent, cameraRef.current.x, CANVAS_WIDTH, 200)) continue;
       
       if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
         if (checkCollision(player, ent)) {
@@ -926,9 +770,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     let landed = false;
     for (const ent of entities) {
       if (ent.isDead) continue; 
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
+      if (isOffCamera(ent, cameraRef.current.x, CANVAS_WIDTH, 200)) continue;
 
       if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
         if (checkCollision(player, ent)) {
@@ -967,12 +809,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     entities.forEach(ent => {
       if (ent.isDead) return;
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) return;
+      if (isOffCamera(ent, cameraRef.current.x, CANVAS_WIDTH, 200)) return;
 
       if (ent.type === EntityType.ENEMY) {
-        if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) {
+        if (isFamilyVariant(ent.enemyVariant)) {
              if (!ent.isFollowing) {
                  if (checkCollision(player, ent) || Math.abs(player.pos.x - ent.pos.x) < 50) {
                      ent.isFollowing = true;
@@ -1002,16 +842,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         } 
         
         else if (ent.enemyVariant === 'BAT' || ent.enemyVariant === 'BIRD') {
-             ent.pos.y += Math.sin(Date.now() / 200) * 1; 
+             ent.pos.y += Math.sin(timeRef.current / 12) * 1; 
              ent.pos.x += ent.vel.x;
         } else if (ent.enemyVariant === 'FISH') {
              ent.pos.x += ent.vel.x;
-             ent.pos.y += Math.cos(Date.now() / 400) * 0.5;
+             ent.pos.y += Math.cos(timeRef.current / 24) * 0.5;
         } else if (ent.enemyVariant === 'UFO') {
              ent.pos.x += ent.vel.x;
-             ent.pos.y += Math.sin(Date.now() / 300) * 1.5; 
+             ent.pos.y += Math.sin(timeRef.current / 18) * 1.5; 
         } else if (ent.enemyVariant === 'SPIDER') {
-             const yOffset = Math.sin(Date.now() / 500) * 80;
+             const yOffset = Math.sin(timeRef.current / 30) * 80;
              ent.pos.y = (ent.initialY || ent.pos.y) + yOffset;
         } else if (ent.enemyVariant === 'MUMMY') {
              ent.pos.x += ent.vel.x * 0.5; 
@@ -1103,7 +943,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         } else if (ent.type === EntityType.SPIKE) {
            if (!player.isInvulnerable) handleDamage(player);
         } else if (ent.type === EntityType.ENEMY) {
-          if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) return; 
+          if (isFamilyVariant(ent.enemyVariant)) return; 
 
           const hitFromTop = !isFreeFly && player.vel.y > 0 && (player.pos.y + player.size.y) < (ent.pos.y + ent.size.y * 0.7);
           if (hitFromTop) {
@@ -1159,15 +999,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     const isSpaceLevel = weather === 'SPACE';
     const isTrainLevel = weather === 'TRAIN';
     const isArcticLevel = weather === 'ARCTIC';
+    const time = timeRef.current * FIXED_DT_MS;
+    const currentLevelId = levelRef.current.id;
     
     // Level specific flags
-    const isLevel2 = levelId === 2; // Torch
-    const isLevel3 = levelId === 3; // Umbrella + Lightning
-    const isLevel4 = levelId === 4; // Mermaid + Harpoon
-    const isLevel5 = levelId === 5; // Archaeologist + Shovel
-    const isLevel6 = levelId === 6; // Ninja + Shuriken
-    const isLevel7 = levelId === 7; // Space + Laser
-    const isHiddenLevel = levelId === 999;
+    const isLevel2 = currentLevelId === 2; // Torch
+    const isLevel3 = currentLevelId === 3; // Umbrella + Lightning
+    const isLevel4 = currentLevelId === 4; // Mermaid + Harpoon
+    const isLevel5 = currentLevelId === 5; // Archaeologist + Shovel
+    const isLevel6 = currentLevelId === 6; // Ninja + Shuriken
+    const isLevel7 = currentLevelId === 7; // Space + Laser
+    const isHiddenLevel = currentLevelId === 999;
 
     // === 1. 绘制背景 (Background) ===
     if (bgCanvasRef.current) {
@@ -1203,11 +1045,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     if (isSpaceLevel) {
         ctx.fillStyle = '#FFF';
-        for (let i = 0; i < 50; i++) { 
-            const starX = (i * 123 + cameraX * 0.05) % CANVAS_WIDTH; 
-            const starY = (i * 87) % CANVAS_HEIGHT;
-            ctx.globalAlpha = Math.random() * 0.5 + 0.3;
-            ctx.fillRect(starX, starY, 1, 1);
+        for (let i = 0; i < STAR_FIELD.length; i++) {
+            const star = STAR_FIELD[i];
+            const starX = (star.x + cameraX * 0.05) % CANVAS_WIDTH;
+            ctx.globalAlpha = 0.45 + Math.sin(timeRef.current * 0.08 + star.phase) * 0.25;
+            ctx.fillRect(starX, star.y, star.size, star.size);
         }
         ctx.globalAlpha = 1.0;
 
@@ -1463,12 +1305,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
           ctx.shadowBlur = 0;
       }
       else if (ent.type === EntityType.WINE) {
-        ctx.fillStyle = COLORS.wine; ctx.fillRect(ent.pos.x + 4, ent.pos.y + 10, 12, 20); ctx.fillRect(ent.pos.x + 7, ent.pos.y, 6, 10);
-        ctx.fillStyle = COLORS.wineLabel; ctx.fillRect(ent.pos.x + 5, ent.pos.y + 15, 10, 8);
-        ent.pos.y += Math.sin(Date.now() / 150) * 0.3; 
+        const wineBob = Math.sin(time / 150) * 3;
+        ctx.fillStyle = COLORS.wine; ctx.fillRect(ent.pos.x + 4, ent.pos.y + 10 + wineBob, 12, 20); ctx.fillRect(ent.pos.x + 7, ent.pos.y + wineBob, 6, 10);
+        ctx.fillStyle = COLORS.wineLabel; ctx.fillRect(ent.pos.x + 5, ent.pos.y + 15 + wineBob, 10, 8);
       }
       else if (ent.type === EntityType.POTION) {
-        const bob = Math.sin(Date.now() / 300) * 2; ctx.fillStyle = COLORS.potion; ctx.beginPath(); ctx.arc(ent.pos.x + 10, ent.pos.y + 15 + bob, 8, 0, Math.PI * 2); ctx.fill();
+        const bob = Math.sin(time / 300) * 2; ctx.fillStyle = COLORS.potion; ctx.beginPath(); ctx.arc(ent.pos.x + 10, ent.pos.y + 15 + bob, 8, 0, Math.PI * 2); ctx.fill();
         ctx.fillRect(ent.pos.x + 7, ent.pos.y + bob, 6, 10);
       }
       else if (ent.type === EntityType.SPIKE) {
@@ -1483,8 +1325,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              ctx.fillStyle = '#D97706'; ctx.fillRect(hx + 30, hy + 20, 20, 40);
              ctx.fillStyle = '#F59E0B'; ctx.beginPath(); ctx.arc(hx + 45, hy + 40, 2, 0, Math.PI*2); ctx.fill();
              ctx.fillStyle = '#FDE047'; ctx.fillRect(hx + 10, hy + 10, 15, 15); ctx.fillRect(hx + 55, hy + 10, 15, 15);
-             const smokeY = hy - 50 - (Date.now() % 1000) / 20;
-             ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(hx + 60, smokeY, 5 + Math.sin(Date.now()/200)*2, 0, Math.PI*2); ctx.fill();
+             const smokeY = hy - 50 - (time % 1000) / 20;
+             ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(hx + 60, smokeY, 5 + Math.sin(time/200)*2, 0, Math.PI*2); ctx.fill();
          } else {
              ctx.fillStyle = '#5D4037'; ctx.fillRect(ent.pos.x, ent.pos.y + 30, 40, 10);
              ctx.fillStyle = '#8D6E63'; ctx.fillRect(ent.pos.x - 5, ent.pos.y + 25, 50, 5);
@@ -1497,9 +1339,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       else if (ent.type === EntityType.ENEMY) {
          const cx = ent.pos.x + ent.size.x / 2;
          const cy = ent.pos.y + ent.size.y / 2;
-         const time = Date.now();
-
-         if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) {
+         if (isFamilyVariant(ent.enemyVariant)) {
              const isMovingRight = ent.vel.x > 0.1;
              const isMovingLeft = ent.vel.x < -0.1;
              const isFacingLeft = isMovingLeft || (!isMovingRight && true); 
@@ -1610,12 +1450,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         // Glow for projectiles
         ctx.shadowBlur = 15; ctx.shadowColor = '#F43F5E';
         if (isLevel5) { 
-            ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((Date.now() / 50) % (Math.PI * 2));
+            ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((time / 50) % (Math.PI * 2));
             ctx.fillStyle = COLORS.shovelHandle; ctx.fillRect(-5, -2, 10, 4); ctx.fillStyle = COLORS.shovel; ctx.fillRect(5, -6, 12, 12); ctx.restore();
         } else if (isLevel7) { 
             ctx.strokeStyle = COLORS.laserBeam; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(b.pos.x, b.pos.y); ctx.lineTo(b.pos.x + (b.vel.x > 0 ? 40 : -40), b.pos.y); ctx.stroke();
         } else if (isLevel6) { 
-             ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((Date.now() / 30) % (Math.PI * 2));
+             ctx.save(); ctx.translate(b.pos.x + b.size.x/2, b.pos.y + b.size.y/2); ctx.rotate((time / 30) % (Math.PI * 2));
              ctx.fillStyle = COLORS.shuriken; ctx.beginPath(); for(let i=0; i<4; i++) { ctx.rotate(Math.PI/2); ctx.moveTo(0, 0); ctx.lineTo(10, 3); ctx.lineTo(0, 6); ctx.lineTo(-10, 3); } ctx.fill(); ctx.restore();
         } else if (isLevel4) { 
             ctx.save(); ctx.translate(b.pos.x, b.pos.y); if (b.vel.x < 0) ctx.scale(-1, 1);
@@ -1632,7 +1472,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     });
 
     // 5. 绘制玩家 (Player)
-    if (player.isInvulnerable && Math.floor(Date.now() / 100) % 2 === 0) {
+    if (player.isInvulnerable && Math.floor(time / 100) % 2 === 0) {
        ctx.globalAlpha = 0.5; 
     }
 
@@ -1667,7 +1507,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         ctx.fillStyle = COLORS.bear;
         if (isLevel4) { 
             // Mermaid Tail
-            const tailWiggle = Math.sin(Date.now() / 100) * 3; ctx.fillStyle = COLORS.tail; ctx.beginPath();
+            const tailWiggle = Math.sin(time / 100) * 3; ctx.fillStyle = COLORS.tail; ctx.beginPath();
             if (player.facingRight) { ctx.moveTo(player.pos.x + 10, player.pos.y + 20); ctx.lineTo(player.pos.x - 10, player.pos.y + 35 + tailWiggle); ctx.lineTo(player.pos.x - 10, player.pos.y + 15 + tailWiggle); } 
             else { ctx.moveTo(player.pos.x + 20, player.pos.y + 20); ctx.lineTo(player.pos.x + 40, player.pos.y + 35 + tailWiggle); ctx.lineTo(player.pos.x + 40, player.pos.y + 15 + tailWiggle); }
             ctx.fill(); ctx.fillStyle = COLORS.bear; ctx.beginPath(); ctx.roundRect(player.pos.x, player.pos.y, player.size.x, 20, 5); ctx.fill();
@@ -1698,7 +1538,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              ctx.fillStyle = '#78350F'; ctx.fillRect(player.pos.x - 5, player.pos.y - 5, player.size.x + 10, 6); ctx.fillRect(player.pos.x + 5, player.pos.y - 12, player.size.x - 10, 8);
         } else if (isLevel6) {
              ctx.fillStyle = COLORS.ninjaSash; ctx.fillRect(player.pos.x, player.pos.y + 2, player.size.x, 4);
-             const tailY = player.pos.y + 4 + Math.sin(Date.now()/100)*2;
+             const tailY = player.pos.y + 4 + Math.sin(time/100)*2;
              if (player.facingRight) { ctx.beginPath(); ctx.moveTo(player.pos.x, player.pos.y + 4); ctx.lineTo(player.pos.x - 15, tailY); ctx.lineTo(player.pos.x - 15, tailY + 5); ctx.fill(); } else { ctx.beginPath(); ctx.moveTo(player.pos.x + player.size.x, player.pos.y + 4); ctx.lineTo(player.pos.x + player.size.x + 15, tailY); ctx.lineTo(player.pos.x + player.size.x + 15, tailY + 5); ctx.fill(); }
         }
     }
@@ -1725,8 +1565,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.restore();
 
     // === Post-Processing: Lighting Overlay ===
-    const overlayCtx = lightingCanvasRef.current?.getContext('2d');
-    if (overlayCtx && lightingCanvasRef.current) {
+    // Skip the extra offscreen pass on bright stages (sun/sea/arctic/train).
+    const needsLighting = weather === 'CAVE' || weather === 'TOMB' || weather === 'SPACE' || weather === 'RAIN';
+    const overlayCtx = needsLighting ? lightingCanvasRef.current?.getContext('2d') : null;
+    if (needsLighting && overlayCtx && lightingCanvasRef.current) {
         overlayCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         
         // Base Ambient Darkness
@@ -1800,9 +1642,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Chromatic Aberration (Fake RGB split on edges)
-    // We only simulate this by drawing the canvas over itself with slight offsets and color blending if we had more layers, 
-    // but a simpler way in 2D context without heavy perf hit is harder. 
-    // Instead, let's just do a color tint overlay for atmosphere.
     if (weather === 'CAVE') {
         ctx.fillStyle = 'rgba(0, 0, 20, 0.1)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     } else if (weather === 'SUNNY') {
@@ -1857,18 +1696,35 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.restore();
   };
 
-  const loop = () => {
-    update();
-    draw();
-    requestRef.current = requestAnimationFrame(loop);
-  };
+  updateRef.current = update;
+  drawRef.current = draw;
 
   useEffect(() => {
+    lastTimeRef.current = 0;
+    accumulatorRef.current = 0;
+    const loop = (now: number) => {
+      if (!lastTimeRef.current) lastTimeRef.current = now;
+      let frameDt = now - lastTimeRef.current;
+      lastTimeRef.current = now;
+      if (frameDt > 100) frameDt = 100;
+
+      accumulatorRef.current += frameDt;
+      let steps = 0;
+      while (accumulatorRef.current >= FIXED_DT_MS && steps < MAX_PHYSICS_STEPS) {
+        updateRef.current();
+        accumulatorRef.current -= FIXED_DT_MS;
+        steps++;
+      }
+      if (steps >= MAX_PHYSICS_STEPS) accumulatorRef.current = 0;
+
+      drawRef.current();
+      requestRef.current = requestAnimationFrame(loop);
+    };
     requestRef.current = requestAnimationFrame(loop);
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [gameState.status]);
+  }, []);
 
   const handleTouchStart = (key: string) => { keysRef.current[key] = true; };
   const handleTouchEnd = (key: string) => { keysRef.current[key] = false; };
@@ -1914,7 +1770,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     </button>
                     <button 
                         className="w-16 h-16 bg-blue-500/30 backdrop-blur-sm rounded-full flex items-center justify-center active:bg-blue-500/50 touch-none"
-                        onTouchStart={() => {
+        onTouchStart={() => {
                             keysRef.current['Space'] = true;
                             playerRef.current.jumpBufferTimer = JUMP_BUFFER;
                         }}

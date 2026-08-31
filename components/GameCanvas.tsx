@@ -1,19 +1,25 @@
 
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { 
   CANVAS_WIDTH, CANVAS_HEIGHT, GRAVITY, TILE_SIZE, COLORS, PLAYER_WIDTH, PLAYER_HEIGHT, 
   MOVE_SPEED, JUMP_FORCE, TERMINAL_VELOCITY, PROJECTILE_SPEED, PROJECTILE_SIZE, SHOOT_COOLDOWN, 
   WINE_DURATION, WINE_SPEED_MULTIPLIER, WINE_JUMP_MULTIPLIER,
   ACCELERATION, FRICTION, AIR_FRICTION, COYOTE_TIME, JUMP_BUFFER,
   SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS,
-  MAX_SPAWNED_ENEMIES, STATS_SYNC_INTERVAL, ENTITY_CLEANUP_INTERVAL
+  MAX_SPAWNED_ENEMIES, STATS_SYNC_INTERVAL, ENTITY_CLEANUP_INTERVAL, SPATIAL_GRID_CELL_SIZE
 } from '../constants';
-import { Entity, Player, EntityType, GameStatus, GameState, EnemyVariant } from '../types';
+import { Entity, Player, EntityType, GameStatus, GameState } from '../types';
 import { levels } from '../levels';
 import { audio } from '../audio';
-import { ArrowLeft, ArrowRight, ArrowUp, Crosshair, Gamepad2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUp, Crosshair } from 'lucide-react';
+import {
+  ParticlePool, MAX_PARTICLES, StatsBuffer, SpatialGrid,
+  checkCollision, isInCameraRange,
+  addShake, updateCameraDecay, updateCameraFollow,
+  countLiveEnemies, compactDeadEntities, spawnEnemy as spawnEnemyFromSpawner,
+  CameraState, Cloud, Tree, Planet, CaveSpike, SunRay, Trail,
+} from '../engine';
 
-// --- 接口定义 ---
 interface GameCanvasProps {
   levelId: number;
   gameState: GameState;
@@ -21,31 +27,6 @@ interface GameCanvasProps {
   onLevelComplete: () => void;
   onPlayerHit: () => void;
   onGameOver: () => void;
-}
-
-// 视觉效果接口
-interface Cloud { x: number; y: number; speed: number; size: number; }
-interface Tree { x: number; y: number; width: number; height: number; color: string; }
-interface Planet { 
-    x: number; y: number; size: number; 
-    color: string; type: 'RING' | 'GAS' | 'CRATER' | 'SOLID'; 
-    speed: number; 
-}
-interface CaveSpike { x: number; height: number; type: 'CEILING' | 'FLOOR'; width: number; }
-interface SunRay { x: number; width: number; angle: number; speed: number; alpha: number; }
-
-// --- 对象池优化：粒子系统 ---
-interface Particle { 
-    active: boolean;
-    x: number; y: number; speedX: number; speedY: number; 
-    size: number; life: number; color?: string; alpha?: number;
-    isScreenSpace?: boolean; // 新增：标记粒子是否在屏幕空间（用于雨雪）
-}
-const MAX_PARTICLES = 300;
-
-// 运动轨迹 (Motion Trail)
-interface Trail {
-    x: number; y: number; facingRight: boolean; alpha: number; type: 'BEAR' | 'DASH';
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setGameState, onLevelComplete, onPlayerHit, onGameOver }) => {
@@ -82,23 +63,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
   const entitiesRef = useRef<Entity[]>(JSON.parse(JSON.stringify(levelRef.current.entities)));
   const bulletsRef = useRef<Entity[]>([]); 
-  const cameraRef = useRef({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); 
+  const cameraRef = useRef<CameraState>({ x: 0, y: 0, shake: 0, lookAheadOffset: 0 }); 
   const keysRef = useRef<{ [key: string]: boolean }>({}); 
   const timeRef = useRef<number>(0); 
   
-  // --- 新增：游戏手感优化 Refs ---
-  const hitStopRef = useRef<number>(0); // 顿帧计时器
-  const gamePadIndexRef = useRef<number | null>(null); // 手柄索引
-  const particlePoolRef = useRef<Particle[]>(
-      new Array(MAX_PARTICLES).fill(null).map(() => ({ 
-          active: false, x: 0, y: 0, speedX: 0, speedY: 0, size: 0, life: 0 
-      }))
-  );
-  const activeParticleCountRef = useRef(0);
-  const pendingStatsRef = useRef({ score: 0, coins: 0 });
+  const hitStopRef = useRef<number>(0);
+  const gamePadIndexRef = useRef<number | null>(null);
+  const particlePoolRef = useRef(new ParticlePool(MAX_PARTICLES));
+  const statsBufferRef = useRef(new StatsBuffer());
+  const spatialGridRef = useRef(new SpatialGrid(SPATIAL_GRID_CELL_SIZE));
   const prevGameStatusRef = useRef(gameState.status);
   const gameStatusRef = useRef(gameState.status);
   const treesRightMostRef = useRef(CANVAS_WIDTH);
+
+  const spawnParticle = (opts: Parameters<ParticlePool['spawn']>[0]) => particlePoolRef.current.spawn(opts);
+  const deactivateParticle = (particle: Parameters<ParticlePool['deactivate']>[0]) => particlePoolRef.current.deactivate(particle);
+  const queueStatsUpdate = (delta: { score?: number; coins?: number }) => statsBufferRef.current.queue(delta);
+  const flushStats = () => statsBufferRef.current.flush(setGameState);
   
   // --- 视觉特效 Refs ---
   const trailsRef = useRef<Trail[]>([]);
@@ -107,63 +88,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   const planetsRef = useRef<Planet[]>([]);
   const caveSpikesRef = useRef<CaveSpike[]>([]); 
   const sunRaysRef = useRef<SunRay[]>([]);
-
-  // --- 粒子系统方法 ---
-  const spawnParticle = (opts: Partial<Omit<Particle, 'active'>>) => {
-      const pool = particlePoolRef.current;
-      for (let i = 0; i < pool.length; i++) {
-          if (!pool[i].active) {
-              pool[i] = { 
-                  active: true, 
-                  x: opts.x || 0, 
-                  y: opts.y || 0, 
-                  speedX: opts.speedX || 0, 
-                  speedY: opts.speedY || 0, 
-                  size: opts.size || 2, 
-                  life: opts.life || 1, 
-                  color: opts.color, 
-                  alpha: opts.alpha,
-                  isScreenSpace: opts.isScreenSpace || false
-              };
-              activeParticleCountRef.current++;
-              return;
-          }
-      }
-  };
-
-  const deactivateParticle = (particle: Particle) => {
-      if (!particle.active) return;
-      particle.active = false;
-      activeParticleCountRef.current = Math.max(0, activeParticleCountRef.current - 1);
-  };
-
-  const queueStatsUpdate = (delta: { score?: number; coins?: number }) => {
-      if (delta.score) pendingStatsRef.current.score += delta.score;
-      if (delta.coins) pendingStatsRef.current.coins += delta.coins;
-  };
-
-  const flushStats = () => {
-      const pending = pendingStatsRef.current;
-      if (pending.score === 0 && pending.coins === 0) return;
-      setGameState(prev => ({
-          ...prev,
-          score: prev.score + pending.score,
-          coinsCollected: prev.coinsCollected + pending.coins,
-      }));
-      pendingStatsRef.current = { score: 0, coins: 0 };
-  };
-
-  const countLiveEnemies = () =>
-      entitiesRef.current.filter(e => e.type === EntityType.ENEMY && !e.isDead).length;
-
-  const compactDeadEntities = () => {
-      const cameraX = cameraRef.current.x;
-      entitiesRef.current = entitiesRef.current.filter(ent => {
-          if (ent.type !== EntityType.ENEMY || !ent.isDead) return true;
-          const entRight = ent.pos.x + ent.size.x;
-          return entRight >= cameraX - CANVAS_WIDTH && ent.pos.x <= cameraX + CANVAS_WIDTH * 2;
-      });
-  };
 
   // --- 挤压与拉伸助手 ---
   const squashAndStretch = (scaleX: number, scaleY: number) => {
@@ -266,8 +190,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         alpha: 0.1 + Math.random() * 0.2
     }));
 
-    particlePoolRef.current.forEach(p => { p.active = false; });
-    activeParticleCountRef.current = 0;
+    particlePoolRef.current.reset();
     trailsRef.current = [];
   }, []);
 
@@ -362,8 +285,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     cameraRef.current.x = 0;
     cameraRef.current.shake = 0;
     cameraRef.current.lookAheadOffset = 0;
-    particlePoolRef.current.forEach(p => { p.active = false; });
-    activeParticleCountRef.current = 0;
+    particlePoolRef.current.reset();
+    statsBufferRef.current.reset();
     trailsRef.current = [];
     timeRef.current = 0;
     
@@ -380,27 +303,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     }
   }, [levelId]);
 
-  // --- 辅助函数 (提前定义) ---
-  const checkCollision = (rect1: Entity, rect2: Entity) => {
-    return (
-      rect1.pos.x < rect2.pos.x + rect2.size.x &&
-      rect1.pos.x + rect1.size.x > rect2.pos.x &&
-      rect1.pos.y < rect2.pos.y + rect2.size.y &&
-      rect1.pos.y + rect1.size.y > rect2.pos.y
-    );
-  };
-
-  const addShake = (amount: number) => {
-      cameraRef.current.shake = amount;
-  };
-
+  // --- 辅助函数 ---
   const handleDamage = (targetPlayer: Player) => {
     onPlayerHit();
     targetPlayer.isInvulnerable = true;
     targetPlayer.invulnerableTimer = 120;
     
     audio.playDamage();
-    addShake(5);
+    addShake(cameraRef.current, 5);
     hitStopRef.current = 5;
     
     for (let k = 0; k < 8; k++) {
@@ -487,66 +397,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   }, []);
 
   const spawnEnemy = (spawner: Entity) => {
-      if (countLiveEnemies() >= MAX_SPAWNED_ENEMIES) return;
-
-      const variant = spawner.spawnVariant || 'NORMAL';
-      let width = 30;
-      let height = 30;
-      let speed = 2;
-      let health = 1;
-      let color = COLORS.enemy;
-
-      if (variant === 'TANK') { width = 50; height = 50; speed = 1; health = 3; color = COLORS.enemyTank; } 
-      else if (variant === 'FAST') { width = 25; height = 25; speed = 4; health = 1; color = COLORS.enemyFast; } 
-      else if (variant === 'BAT' || variant === 'BIRD') { width = 30; height = 20; speed = 3; health = 1; color = variant === 'BIRD' ? COLORS.enemyBird : COLORS.enemyBat; } 
-      else if (variant === 'SLIME') { width = 30; height = 20; speed = 1; health = 2; color = COLORS.enemySlime; } 
-      else if (variant === 'FISH') { width = 35; height = 25; speed = 2.5; health = 1; color = COLORS.enemyFish; } 
-      else if (variant === 'SKELETON') { width = 25; height = 45; speed = 2; health = 2; color = COLORS.enemySkeleton; } 
-      else if (variant === 'MUMMY') { width = 30; height = 45; speed = 1; health = 4; color = COLORS.enemyMummy; } 
-      else if (variant === 'ZOMBIE') { width = 30; height = 45; speed = 1.5; health = 3; color = COLORS.enemyZombie; } 
-      else if (variant === 'SPIDER') { width = 30; height = 25; speed = 2; health = 1; color = COLORS.enemySpider; } 
-      else if (variant === 'ALIEN') { width = 25; height = 35; speed = 2; health = 2; color = COLORS.enemyAlien; } 
-      else if (variant === 'UFO') { width = 40; height = 25; speed = 4; health = 2; color = COLORS.enemyUfo; } 
-      else if (variant === 'METEOR') { width = 35; height = 35; speed = 4; health = 1; color = COLORS.meteor; }
-
-      const dir = Math.random() > 0.5 ? 1 : -1;
-      let spawnY = spawner.pos.y - height + spawner.size.y; 
-      
-      if (variant === 'BAT' || variant === 'BIRD' || variant === 'UFO') {
-          spawnY -= (variant === 'UFO' ? 100 + Math.random() * 50 : 100); 
-      }
-      if (variant === 'METEOR') {
-          spawnY = spawner.pos.y - 300 + Math.random() * 400;
-      }
-
-      const enemy: Entity = {
-        id: `spawned_${Date.now()}_${Math.random()}`,
-        type: EntityType.ENEMY,
-        pos: { x: spawner.pos.x, y: spawnY }, 
-        size: { x: width, y: height },
-        vel: { x: speed * dir, y: 0 },
-        patrolStart: spawner.pos.x - 400,
-        patrolEnd: spawner.pos.x + 400,
-        enemyVariant: variant,
-        health,
-        maxHealth: health,
-        color
-      };
-
-      if (variant === 'SPIDER') { enemy.vel.x = 0; enemy.vel.y = speed; enemy.initialY = spawnY; }
-      if (variant === 'METEOR') {
-          enemy.vel.x = -speed - Math.random() * 2; 
-          enemy.vel.y = (Math.random() - 0.5) * 1; 
-          enemy.patrolStart = -99999;
-          enemy.patrolEnd = 99999;
-      }
-
-      entitiesRef.current.push(enemy);
-      
-      const dist = Math.abs(spawner.pos.x - playerRef.current.pos.x);
-      if (dist < 800 && variant !== 'METEOR') { 
-          audio.playRoar();
-      }
+      spawnEnemyFromSpawner(spawner, {
+          entities: entitiesRef.current,
+          player: playerRef.current,
+          liveEnemyCount: countLiveEnemies(entitiesRef.current),
+          maxEnemies: MAX_SPAWNED_ENEMIES,
+          onRoar: () => audio.playRoar(),
+      });
   };
 
   // --- 更新环境逻辑 (粒子/背景) ---
@@ -585,7 +442,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
              }
         });
         
-        if (activeParticleCountRef.current < MAX_PARTICLES && Math.random() > 0.8) { 
+        if (particlePoolRef.current.activeCount < MAX_PARTICLES && Math.random() > 0.8) { 
             const spawnX = cameraRef.current.x + CANVAS_WIDTH + Math.random() * 100;
             spawnParticle({
                 x: spawnX, y: Math.random() * CANVAS_HEIGHT,
@@ -622,7 +479,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
     }
 
-    if (activeParticleCountRef.current < MAX_PARTICLES) {
+    if (particlePoolRef.current.activeCount < MAX_PARTICLES) {
         if (weather === 'SEA' && Math.random() > 0.9) { 
              const spawnX = cameraRef.current.x + Math.random() * CANVAS_WIDTH;
              spawnParticle({
@@ -668,7 +525,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        });
     }
 
-    particlePoolRef.current.forEach(p => {
+    particlePoolRef.current.pool.forEach(p => {
         if (!p.active) return;
         p.x += p.speedX;
         p.y += p.speedY;
@@ -715,12 +572,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         flushStats();
     }
     if (timeRef.current % ENTITY_CLEANUP_INTERVAL === 0) {
-        compactDeadEntities();
+        entitiesRef.current = compactDeadEntities(entitiesRef.current, cameraRef.current.x);
     }
 
     const player = playerRef.current;
     const entities = entitiesRef.current;
     const bullets = bulletsRef.current;
+    const spatialGrid = spatialGridRef.current;
+    const cameraX = cameraRef.current.x;
     const weather = levelRef.current.weather;
     const isSeaLevel = weather === 'SEA';
     const isSpaceLevel = weather === 'SPACE'; 
@@ -769,13 +628,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (player.attackTimer <= 0) player.isAttacking = false;
     }
     
-    if (cameraRef.current.shake > 0) {
-        cameraRef.current.shake *= 0.9;
-        if (cameraRef.current.shake < 0.5) cameraRef.current.shake = 0;
-    }
+    updateCameraDecay(cameraRef.current);
 
     if (player.shootCooldown > 0) player.shootCooldown--;
     
+    spatialGrid.rebuild(entities);
+
     // 隐藏关禁止射击
     if (!isHiddenLevel && !isArcticLevel && (keysRef.current['KeyF'] || keysRef.current['KeyJ']) && player.shootCooldown <= 0) {
         player.shootCooldown = SHOOT_COOLDOWN;
@@ -794,7 +652,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
         
         audio.playShoot();
-        addShake(2); 
+        addShake(cameraRef.current, 2); 
     }
 
     for (let i = bullets.length - 1; i >= 0; i--) {
@@ -814,14 +672,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         }
 
         let bulletHit = false;
+        const bulletCandidates = spatialGrid.queryRect(b.pos.x, b.pos.y, b.size.x, b.size.y, 100);
 
-        // 性能优化：剔除检测 BUG修复 - 增加物体宽度的判断
-        for (const ent of entities) {
+        for (const ent of bulletCandidates) {
             if (ent.isDead) continue; 
-            
-            // 修复：确保物体左右边界都在考虑范围内，避免长平台被错误剔除
-            const entRight = ent.pos.x + ent.size.x;
-            if (entRight < cameraRef.current.x - 100 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 100) continue;
+            if (!isInCameraRange(ent, cameraX, CANVAS_WIDTH, 100)) continue;
 
             if (ent.type === EntityType.ENEMY) {
                 if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) continue;
@@ -834,7 +689,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                         const bonus = (ent.enemyVariant === 'TANK' || ent.enemyVariant === 'ZOMBIE' || ent.enemyVariant === 'UFO' ? 500 : 200);
                         queueStatsUpdate({ score: bonus });
                         audio.playKill();
-                        addShake(10);
+                        addShake(cameraRef.current, 10);
                         hitStopRef.current = 5; 
                         
                         for (let k = 0; k < 8; k++) {
@@ -848,7 +703,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     } else {
                         ent.pos.x += b.vel.x > 0 ? 5 : -5;
                         audio.playDamage();
-                        addShake(2);
+                        addShake(cameraRef.current, 2);
                         hitStopRef.current = 2; 
                     }
                     break;
@@ -868,7 +723,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     if (isTombLevel) {
                          ent.isDead = true;
                          audio.playDig();
-                         addShake(5);
+                         addShake(cameraRef.current, 5);
                          for (let k = 0; k < 5; k++) {
                             spawnParticle({
                                 x: ent.pos.x + Math.random() * ent.size.x, y: ent.pos.y + Math.random() * ent.size.y,
@@ -960,15 +815,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     if (player.pos.x < 0) player.pos.x = 0;
     if (player.pos.x > levelRef.current.width - player.size.x) player.pos.x = levelRef.current.width - player.size.x;
 
-    for (const ent of entities) {
+    const wallQueryBuffer = 200;
+    const horizontalWallCandidates = spatialGrid.queryRect(
+      player.pos.x, player.pos.y, player.size.x, player.size.y, wallQueryBuffer,
+    );
+
+    for (const ent of horizontalWallCandidates) {
       if (ent.isDead) continue; 
-      
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
-      
-      if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
-        if (checkCollision(player, ent)) {
+      if (ent.type !== EntityType.PLATFORM && ent.type !== EntityType.BREAKABLE_WALL) continue;
+
+      if (checkCollision(player, ent)) {
           if (player.vel.x > 0) {
             player.pos.x = ent.pos.x - player.size.x;
             player.vel.x = 0; 
@@ -976,21 +832,21 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.pos.x = ent.pos.x + ent.size.x;
             player.vel.x = 0;
           }
-        }
       }
     }
 
     player.pos.y += player.vel.y;
 
     let landed = false;
-    for (const ent of entities) {
-      if (ent.isDead) continue; 
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) continue;
+    const verticalWallCandidates = spatialGrid.queryRect(
+      player.pos.x, player.pos.y, player.size.x, player.size.y, wallQueryBuffer,
+    );
 
-      if (ent.type === EntityType.PLATFORM || ent.type === EntityType.BREAKABLE_WALL) {
-        if (checkCollision(player, ent)) {
+    for (const ent of verticalWallCandidates) {
+      if (ent.isDead) continue; 
+      if (ent.type !== EntityType.PLATFORM && ent.type !== EntityType.BREAKABLE_WALL) continue;
+
+      if (checkCollision(player, ent)) {
           if (player.vel.y > 0) { 
             player.pos.y = ent.pos.y - player.size.y;
             player.vel.y = 0;
@@ -1002,7 +858,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.pos.y = ent.pos.y + ent.size.y;
             player.vel.y = 0;
           }
-        }
       }
     }
     player.isGrounded = landed;
@@ -1024,11 +879,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       if (player.invulnerableTimer <= 0) player.isInvulnerable = false;
     }
 
-    entities.forEach(ent => {
+    spatialGrid.rebuild(entities);
+    const activeEntities = spatialGrid.queryViewport(
+      cameraRef.current.x, CANVAS_WIDTH, levelRef.current.height, wallQueryBuffer,
+    );
+
+    activeEntities.forEach(ent => {
       if (ent.isDead) return;
-      // 修复：剔除检测逻辑修复
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraRef.current.x - 200 || ent.pos.x > cameraRef.current.x + CANVAS_WIDTH + 200) return;
 
       if (ent.type === EntityType.ENEMY) {
         if (ent.enemyVariant && ent.enemyVariant.startsWith('FAMILY')) {
@@ -1170,7 +1027,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             player.vel.y = JUMP_FORCE / 2; 
             queueStatsUpdate({ score: 200 });
             audio.playKill();
-            addShake(5);
+            addShake(cameraRef.current, 5);
             hitStopRef.current = 4; 
           } else {
              if (!player.isInvulnerable) handleDamage(player);
@@ -1179,15 +1036,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       }
     });
 
-    const targetLookAhead = player.facingRight ? 100 : -50;
-    cameraRef.current.lookAheadOffset += (targetLookAhead - cameraRef.current.lookAheadOffset) * 0.05;
-    
-    const targetCamX = player.pos.x - CANVAS_WIDTH / 3 + cameraRef.current.lookAheadOffset;
-    cameraRef.current.x += (targetCamX - cameraRef.current.x) * 0.05; 
-    
-    if (cameraRef.current.x < 0) cameraRef.current.x = 0;
-    const maxCamX = levelRef.current.width - CANVAS_WIDTH;
-    if (cameraRef.current.x > maxCamX) cameraRef.current.x = maxCamX;
+    updateCameraFollow(cameraRef.current, player, levelRef.current.width);
   };
 
   const draw = () => {
@@ -1352,13 +1201,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     ctx.save();
     ctx.translate(-cameraX + shakeX, shakeY); 
 
+    spatialGridRef.current.rebuild(entitiesRef.current);
+    const visibleEntities = spatialGridRef.current.queryViewport(
+      cameraX, CANVAS_WIDTH, levelRef.current.height, 200,
+    );
+
     // === 3. 绘制阴影 (Shadows Pass) ===
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-    entitiesRef.current.forEach(ent => {
+    visibleEntities.forEach(ent => {
         if (ent.isDead) return;
-        // 修复：剔除检测逻辑修复
-        const entRight = ent.pos.x + ent.size.x;
-        if (entRight < cameraX - 100 || ent.pos.x > cameraX + CANVAS_WIDTH + 100) return;
 
         if (ent.type === EntityType.PLAYER || ent.type === EntityType.ENEMY || ent.type === EntityType.TROPHY || ent.type === EntityType.CHECKPOINT) {
              ctx.beginPath();
@@ -1368,13 +1219,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     });
 
     // === 4. 绘制实体 (Entities Pass) ===
-    entitiesRef.current.forEach(ent => {
+    visibleEntities.forEach(ent => {
       if (ent.isDead) return;
       if (ent.type === EntityType.SPAWNER) return;
-      
-      const entRight = ent.pos.x + ent.size.x;
-      if (entRight < cameraX - 200 || ent.pos.x > cameraX + CANVAS_WIDTH + 200) return;
-
       if (ent.type === EntityType.PLATFORM) {
         if (ent.id.startsWith('end_gate')) {
              if (ent.id === 'end_gate_sakura') { 
@@ -1829,7 +1676,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
 
         // Collectable Lights (Coins, Checkpoints)
-        entitiesRef.current.forEach(e => {
+        visibleEntities.forEach(e => {
             if (e.isDead) return;
             const ex = e.pos.x - cameraX + e.size.x/2 + shakeX;
             const ey = e.pos.y + e.size.y/2 + shakeY;
@@ -1879,7 +1726,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         ctx.fillStyle = '#FFF'; ctx.font = '10px "Press Start 2P"'; ctx.textAlign = 'center'; ctx.fillText("BOSS", barX + barWidth/2, barY - 5);
     }
 
-    particlePoolRef.current.forEach(p => {
+    particlePoolRef.current.pool.forEach(p => {
         if (!p.active) return;
         if (p.isScreenSpace) {
             // 屏幕空间绘制（雨/雪）

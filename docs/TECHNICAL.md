@@ -49,14 +49,25 @@
 ### 3.3 离屏渲染 (Off-screen CanvasRendering)
 背景的天际线与环境底色，由于像素覆盖率巨大（Fill-rate），每帧利用主线程重绘渐变会极为耗时。项目使用了 `bgCanvasRef` 和 `lightingCanvasRef` 创建双缓冲离屏 Canvas。在初始化 (`useEffect`) 时绘制一次复杂的静态图层，后续的帧循环中仅通过 `ctx.drawImage` 将此画卷切片绘制到屏上。
 
+### 3.4 空间网格碰撞 (Spatial Grid)
+
+碰撞 broad-phase 使用均匀网格（`engine/collision.ts` 中的 `SpatialGrid`），单元大小与 `TILE_SIZE` 对齐。每帧重建网格后，子弹、玩家与实体的交互仅查询相关单元内的候选对象，避免对全关卡实体做 O(n) 遍历。
+
 ---
 
 ## 4. 目录结构指南 (Directory Structure)
 
 ```text
 /
+├── engine/              # 【新增】可复用引擎模块
+│   ├── collision.ts     # AABB 检测 + SpatialGrid 空间网格
+│   ├── ParticlePool.ts  # 粒子对象池
+│   ├── StatsBuffer.ts   # 分数/金币批量同步缓冲
+│   ├── camera.ts        # 相机跟随与震屏
+│   ├── spawnEnemy.ts    # 刷怪工厂
+│   └── entityLifecycle.ts
 ├── components/
-│   └── GameCanvas.tsx   # 【核心】Canvas 渲染引擎、物理判定、控制逻辑
+│   └── GameCanvas.tsx   # Canvas 渲染引擎、物理判定、控制逻辑
 ├── audio.ts             # Web Audio API 封装，基于正弦波生成 8bit 音效
 ├── constants.ts         # 游戏全局常数字典（重力、速度、尺寸基准）
 ├── levels.ts            # 关卡工厂 (纯数据)，包含 7个大地图+1个隐藏地图

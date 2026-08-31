@@ -46,6 +46,7 @@ export const REVIVE_COST = 1;   // 复活所需金币
 export const MAX_SPAWNED_ENEMIES = 30;   // 同屏刷怪上限
 export const STATS_SYNC_INTERVAL = 10;   // 分数/金币同步到 React 的帧间隔
 export const ENTITY_CLEANUP_INTERVAL = 300; // 清理死亡实体的帧间隔
+export const SPATIAL_GRID_CELL_SIZE = TILE_SIZE; // 空间网格单元大小
 
 // --- 视觉特效配置 ---
 export const VISUALS = {

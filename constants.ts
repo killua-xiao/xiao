@@ -42,6 +42,11 @@ export const PLAYER_HEIGHT = 30;
 export const MAX_HEALTH = 3;    // 初始最大生命值
 export const REVIVE_COST = 1;   // 复活所需金币
 
+// --- 引擎性能参数 ---
+export const MAX_SPAWNED_ENEMIES = 30;   // 同屏刷怪上限
+export const STATS_SYNC_INTERVAL = 10;   // 分数/金币同步到 React 的帧间隔
+export const ENTITY_CLEANUP_INTERVAL = 300; // 清理死亡实体的帧间隔
+
 // --- 视觉特效配置 ---
 export const VISUALS = {
     sunRayCount: 5,

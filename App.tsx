@@ -8,7 +8,7 @@
  * 仅负责 React 侧的 HUD 渲染、关卡路由以及得分与隐藏秘籍的监听。
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameCanvas } from './components/GameCanvas';
 import { GameStatus, GameState } from './types';
 import { levels } from './levels';
@@ -182,11 +182,14 @@ const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
   const [highScore, setHighScore] = useState(0);
   const [gameSessionId, setGameSessionId] = useState(0); // Used to force component remount
-  const [cheatBuffer, setCheatBuffer] = useState(""); // Buffer for cheat code
+  const cheatBufferRef = useRef("");
 
   useEffect(() => {
     const saved = localStorage.getItem('bear_adventure_highscore');
-    if (saved) setHighScore(parseInt(saved));
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!Number.isNaN(parsed) && parsed >= 0) setHighScore(parsed);
+    }
   }, []);
 
   useEffect(() => {
@@ -210,12 +213,12 @@ const App: React.FC = () => {
           }
 
           if (gameState.status === GameStatus.CREDITS) {
-              const newBuffer = (cheatBuffer + e.key).slice(-8); // Keep last 8 chars
-              setCheatBuffer(newBuffer);
+              const newBuffer = (cheatBufferRef.current + e.key).slice(-8);
+              cheatBufferRef.current = newBuffer;
               
               if (newBuffer === "20181018") {
                   audio.playPowerUp();
-                  // Start Hidden Level 999
+                  cheatBufferRef.current = "";
                   startGame(999); 
               }
           }
@@ -223,7 +226,7 @@ const App: React.FC = () => {
       
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [gameState.status, cheatBuffer]);
+  }, [gameState.status]);
 
   // PAUSE ON BLUR
   useEffect(() => {
@@ -244,8 +247,7 @@ const App: React.FC = () => {
     audio.init(); 
     setGameSessionId(prev => prev + 1); 
     
-    // Reset buffer
-    setCheatBuffer("");
+    cheatBufferRef.current = "";
 
     // Only play intro for the first level
     if (levelId === 1) {
@@ -398,12 +400,8 @@ const App: React.FC = () => {
 
         {/* MENU - REDESIGNED */}
         {gameState.status === GameStatus.MENU && (
-          <div className="absolute inset-0 flex flex-col justify-between items-center z-10 bg-[url('https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=2670&auto=format&fit=crop')] bg-cover bg-center overflow-hidden">
-            {/* Clean Dark Overlay */}
+          <div className="absolute inset-0 flex flex-col justify-between items-center z-10 menu-bg overflow-hidden">
             <div className="absolute inset-0 bg-black/20 pointer-events-none"></div>
-            
-            {/* Subtle Texture */}
-            <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] pointer-events-none"></div>
 
             {/* --- TOP SECTION: TITLE LOGO --- */}
             <div className="relative z-20 mt-16 flex flex-col items-center">

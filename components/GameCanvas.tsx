@@ -5,7 +5,8 @@ import {
   MOVE_SPEED, JUMP_FORCE, TERMINAL_VELOCITY, PROJECTILE_SPEED, PROJECTILE_SIZE, SHOOT_COOLDOWN, 
   WINE_DURATION, WINE_SPEED_MULTIPLIER, WINE_JUMP_MULTIPLIER,
   ACCELERATION, FRICTION, AIR_FRICTION, COYOTE_TIME, JUMP_BUFFER,
-  SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS
+  SWIM_SPEED, WATER_FRICTION, MELEE_RANGE, MELEE_DURATION, MELEE_COOLDOWN, VISUALS,
+  MAX_SPAWNED_ENEMIES, STATS_SYNC_INTERVAL, ENTITY_CLEANUP_INTERVAL
 } from '../constants';
 import { Entity, Player, EntityType, GameStatus, GameState, EnemyVariant } from '../types';
 import { levels } from '../levels';
@@ -93,6 +94,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
           active: false, x: 0, y: 0, speedX: 0, speedY: 0, size: 0, life: 0 
       }))
   );
+  const activeParticleCountRef = useRef(0);
+  const pendingStatsRef = useRef({ score: 0, coins: 0 });
+  const prevGameStatusRef = useRef(gameState.status);
+  const gameStatusRef = useRef(gameState.status);
+  const treesRightMostRef = useRef(CANVAS_WIDTH);
   
   // --- 视觉特效 Refs ---
   const trailsRef = useRef<Trail[]>([]);
@@ -119,9 +125,44 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                   alpha: opts.alpha,
                   isScreenSpace: opts.isScreenSpace || false
               };
+              activeParticleCountRef.current++;
               return;
           }
       }
+  };
+
+  const deactivateParticle = (particle: Particle) => {
+      if (!particle.active) return;
+      particle.active = false;
+      activeParticleCountRef.current = Math.max(0, activeParticleCountRef.current - 1);
+  };
+
+  const queueStatsUpdate = (delta: { score?: number; coins?: number }) => {
+      if (delta.score) pendingStatsRef.current.score += delta.score;
+      if (delta.coins) pendingStatsRef.current.coins += delta.coins;
+  };
+
+  const flushStats = () => {
+      const pending = pendingStatsRef.current;
+      if (pending.score === 0 && pending.coins === 0) return;
+      setGameState(prev => ({
+          ...prev,
+          score: prev.score + pending.score,
+          coinsCollected: prev.coinsCollected + pending.coins,
+      }));
+      pendingStatsRef.current = { score: 0, coins: 0 };
+  };
+
+  const countLiveEnemies = () =>
+      entitiesRef.current.filter(e => e.type === EntityType.ENEMY && !e.isDead).length;
+
+  const compactDeadEntities = () => {
+      const cameraX = cameraRef.current.x;
+      entitiesRef.current = entitiesRef.current.filter(ent => {
+          if (ent.type !== EntityType.ENEMY || !ent.isDead) return true;
+          const entRight = ent.pos.x + ent.size.x;
+          return entRight >= cameraX - CANVAS_WIDTH && ent.pos.x <= cameraX + CANVAS_WIDTH * 2;
+      });
   };
 
   // --- 挤压与拉伸助手 ---
@@ -193,6 +234,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
        height: 100 + Math.random() * 150,
        color: '#171717' 
     }));
+    treesRightMostRef.current = Math.max(CANVAS_WIDTH, ...treesRef.current.map(t => t.x));
 
     const planetColors = [COLORS.planetRed, COLORS.planetBlue, '#D1D5DB', '#FCD34D', '#A78BFA', '#F472B6', '#34D399'];
     const planetTypes: ('RING' | 'GAS' | 'CRATER' | 'SOLID')[] = ['RING', 'GAS', 'CRATER', 'SOLID', 'SOLID', 'GAS'];
@@ -224,7 +266,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         alpha: 0.1 + Math.random() * 0.2
     }));
 
-    particlePoolRef.current.forEach(p => p.active = false);
+    particlePoolRef.current.forEach(p => { p.active = false; });
+    activeParticleCountRef.current = 0;
     trailsRef.current = [];
   }, []);
 
@@ -319,7 +362,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     cameraRef.current.x = 0;
     cameraRef.current.shake = 0;
     cameraRef.current.lookAheadOffset = 0;
-    particlePoolRef.current.forEach(p => p.active = false);
+    particlePoolRef.current.forEach(p => { p.active = false; });
+    activeParticleCountRef.current = 0;
     trailsRef.current = [];
     timeRef.current = 0;
     
@@ -331,6 +375,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
     audio.startBGM(bgmType);
     
     return () => {
+      flushStats();
       audio.stopBGM();
     }
   }, [levelId]);
@@ -369,6 +414,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
   // --- 复活/状态同步逻辑 ---
   useEffect(() => {
+    gameStatusRef.current = gameState.status;
+
     if (gameState.status === GameStatus.PLAYING) {
         if (playerRef.current.invulnerableTimer === 0) {
              playerRef.current.isInvulnerable = true;
@@ -393,7 +440,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                handleDamage(playerRef.current); 
            }
        }
-       keysRef.current = {}; 
+       const prevStatus = prevGameStatusRef.current;
+       if (prevStatus === GameStatus.REVIVE_PROMPT || prevStatus === GameStatus.LEVEL_COMPLETE) {
+           keysRef.current = {};
+       }
+       prevGameStatusRef.current = gameState.status;
        
        let bgmType: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL';
         if (levelRef.current.weather === 'CAVE') bgmType = 'CAVE';
@@ -402,6 +453,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         if (levelRef.current.weather === 'ARCTIC') bgmType = 'WARM';
         audio.startBGM(bgmType);
     } else {
+       flushStats();
        audio.stopBGM();
     }
   }, [gameState.status]);
@@ -435,6 +487,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   }, []);
 
   const spawnEnemy = (spawner: Entity) => {
+      if (countLiveEnemies() >= MAX_SPAWNED_ENEMIES) return;
+
       const variant = spawner.spawnVariant || 'NORMAL';
       let width = 30;
       let height = 30;
@@ -524,15 +578,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         treesRef.current.forEach(tree => {
              tree.x -= trainSpeed; 
              if (tree.x + tree.width < -100) {
-                 const rightMostX = Math.max(...treesRef.current.map(t => t.x), CANVAS_WIDTH);
-                 tree.x = rightMostX + 300 + Math.random() * 400; 
+                 tree.x = treesRightMostRef.current + 300 + Math.random() * 400; 
                  tree.height = 100 + Math.random() * 150;
                  tree.y = CANVAS_HEIGHT - 30; 
+                 treesRightMostRef.current = Math.max(treesRightMostRef.current, tree.x);
              }
         });
         
-        const activeParticles = particlePoolRef.current.filter(p => p.active).length;
-        if (activeParticles < MAX_PARTICLES && Math.random() > 0.8) { 
+        if (activeParticleCountRef.current < MAX_PARTICLES && Math.random() > 0.8) { 
             const spawnX = cameraRef.current.x + CANVAS_WIDTH + Math.random() * 100;
             spawnParticle({
                 x: spawnX, y: Math.random() * CANVAS_HEIGHT,
@@ -569,8 +622,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         });
     }
 
-    const activeCount = particlePoolRef.current.filter(p => p.active).length;
-    if (activeCount < MAX_PARTICLES) {
+    if (activeParticleCountRef.current < MAX_PARTICLES) {
         if (weather === 'SEA' && Math.random() > 0.9) { 
              const spawnX = cameraRef.current.x + Math.random() * CANVAS_WIDTH;
              spawnParticle({
@@ -625,7 +677,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             p.life -= 0.05;
             p.size *= 0.95; 
         } else if (weather === 'SEA' && p.y < 0) {
-            p.active = false;
+            deactivateParticle(p);
         }
 
         if (p.y > CANVAS_HEIGHT && weather !== 'SEA') {
@@ -634,10 +686,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                p.y = -10; 
                p.x = Math.random() * CANVAS_WIDTH;
            } else {
-               p.active = false;
+               deactivateParticle(p);
            }
         } else if (p.life <= 0) {
-           p.active = false;
+           deactivateParticle(p);
         }
     });
 
@@ -657,7 +709,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
 
     updateEnvironment();
 
-    if (gameState.status !== GameStatus.PLAYING) return;
+    if (gameStatusRef.current !== GameStatus.PLAYING) return;
+
+    if (timeRef.current % STATS_SYNC_INTERVAL === 0) {
+        flushStats();
+    }
+    if (timeRef.current % ENTITY_CLEANUP_INTERVAL === 0) {
+        compactDeadEntities();
+    }
 
     const player = playerRef.current;
     const entities = entitiesRef.current;
@@ -773,7 +832,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
                     if (ent.health <= 0) {
                         ent.isDead = true;
                         const bonus = (ent.enemyVariant === 'TANK' || ent.enemyVariant === 'ZOMBIE' || ent.enemyVariant === 'UFO' ? 500 : 200);
-                        setGameState(prev => ({ ...prev, score: prev.score + bonus }));
+                        queueStatsUpdate({ score: bonus });
                         audio.playKill();
                         addShake(10);
                         hitStopRef.current = 5; 
@@ -1049,13 +1108,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
       if (checkCollision(player, ent)) {
         if (ent.type === EntityType.COIN) {
           ent.isDead = true;
-          setGameState(prev => ({ ...prev, score: prev.score + 100, coinsCollected: prev.coinsCollected + 1 }));
+          queueStatsUpdate({ score: 100, coins: 1 });
           audio.playCoin();
         } else if (ent.type === EntityType.WINE) {
           ent.isDead = true;
           player.drunkTimer = WINE_DURATION;
           audio.playPowerUp();
-          setGameState(prev => ({ ...prev, score: prev.score + 500 }));
+          queueStatsUpdate({ score: 500 });
           for (let k = 0; k < 20; k++) {
              spawnParticle({
                  x: player.pos.x + player.size.x / 2, y: player.pos.y + player.size.y / 2,
@@ -1109,7 +1168,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
           if (hitFromTop) {
             ent.isDead = true;
             player.vel.y = JUMP_FORCE / 2; 
-            setGameState(prev => ({ ...prev, score: prev.score + 200 }));
+            queueStatsUpdate({ score: 200 });
             audio.playKill();
             addShake(5);
             hitStopRef.current = 4; 
@@ -1206,7 +1265,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
         for (let i = 0; i < 50; i++) { 
             const starX = (i * 123 + cameraX * 0.05) % CANVAS_WIDTH; 
             const starY = (i * 87) % CANVAS_HEIGHT;
-            ctx.globalAlpha = Math.random() * 0.5 + 0.3;
+            ctx.globalAlpha = ((i * 17) % 10) / 10 * 0.5 + 0.3;
             ctx.fillRect(starX, starY, 1, 1);
         }
         ctx.globalAlpha = 1.0;
@@ -1841,7 +1900,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
             } else if (p.alpha) { 
                 ctx.fillStyle = p.color || '#FFF'; ctx.globalAlpha = p.alpha; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
             } else { 
-                ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
+                ctx.fillStyle = p.color || '#FFF'; ctx.globalAlpha = p.life; ctx.beginPath(); ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0;
             }
         }
     });
@@ -1858,13 +1917,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ levelId, gameState, setG
   };
 
   const loop = () => {
-    update();
-    draw();
-    requestRef.current = requestAnimationFrame(loop);
+    if (gameStatusRef.current === GameStatus.PLAYING) {
+      update();
+      draw();
+      requestRef.current = requestAnimationFrame(loop);
+    }
   };
 
   useEffect(() => {
-    requestRef.current = requestAnimationFrame(loop);
+    gameStatusRef.current = gameState.status;
+    if (gameState.status === GameStatus.PLAYING) {
+      requestRef.current = requestAnimationFrame(loop);
+    }
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };

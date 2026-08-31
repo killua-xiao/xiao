@@ -45,7 +45,10 @@ const createCheckpoint = (x: number, y: number, id: string) => ({
   id, type: EntityType.CHECKPOINT, pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE - 40 }, size: { x: 40, y: 40 }, vel: { x: 0, y: 0 }, isChecked: false
 });
 
-const createSpawner = (x: number, y: number, variant: EnemyVariant, cooldownFrames: number, id: string) => ({
+const createSpawner = (
+  x: number, y: number, variant: EnemyVariant, cooldownFrames: number, id: string,
+  maxAlive?: number,
+) => ({
   id,
   type: EntityType.SPAWNER,
   pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE },
@@ -53,7 +56,8 @@ const createSpawner = (x: number, y: number, variant: EnemyVariant, cooldownFram
   vel: { x: 0, y: 0 },
   spawnVariant: variant,
   spawnCooldown: cooldownFrames,
-  timeUntilSpawn: 0
+  timeUntilSpawn: 0,
+  spawnMaxAlive: maxAlive ?? (variant === 'METEOR' ? 2 : 3),
 });
 
 const createFamily = (x: number, y: number, variant: EnemyVariant, id: string) => {
@@ -161,6 +165,7 @@ export const levels: LevelData[] = [
       // 调整存档点位置到下一段安全平台的起始处 (x=86)
       // 之前的80是在平台边缘，容易掉下去
       createCheckpoint(86, 1, 'cp_1_1'), 
+      createCheckpoint(125, 2, 'cp_1_2'),
 
       createPlatform(85, 1, 30, 1, 'floor-fast'),
       createSpawner(90, 2, 'FAST', 200, 'spawner2'), 
@@ -209,6 +214,7 @@ export const levels: LevelData[] = [
       createSpawner(65, 2, 'BAT', 200, 'sp_bat1'),
 
       createCheckpoint(65, 1, 'cp_2_1'),
+      createCheckpoint(115, 1, 'cp_2_2'),
 
       createPlatform(75, 4, 5, 1, 'c_high1'),
       createCoin(77, 6, 'cc1'),
@@ -262,6 +268,7 @@ export const levels: LevelData[] = [
       // 调整存档点位置到庭院安全区 (x=76)
       // 之前的70在台阶和庭院的间隙中
       createCheckpoint(76, 2, 'cp_3_1'),
+      createCheckpoint(120, 2, 'cp_3_2'),
 
       createPlatform(75, 2, 30, 1, 'k_courtyard'),
       createEnemy(85, 2, 10, 'TANK', 'k_tank_1'), // 稍微后移坦克到85，给玩家喘息
@@ -313,6 +320,7 @@ export const levels: LevelData[] = [
       createCoin(41, 8, 'sea_c4'),
 
       createCheckpoint(41, 7, 'cp_4_1'),
+      createCheckpoint(100, 6, 'cp_4_2'),
 
       createPlatform(50, 1, 30, 4, 'sea_tunnel_floor'),
       createPlatform(50, 8, 30, 4, 'sea_tunnel_ceil'),
@@ -371,6 +379,7 @@ export const levels: LevelData[] = [
       createEnemy(65, 1, 5, 'MUMMY', 't_mummy_2'),
       
       createCheckpoint(72, 1, 'cp_5_1'),
+      createCheckpoint(115, 1, 'cp_5_2'),
 
       createWall(75, 12, 3, 12, 't_wall_block_3'),
       
@@ -416,6 +425,7 @@ export const levels: LevelData[] = [
       createEnemy(60, 2, 5, 'ZOMBIE', 'tr_z2'), // FIXED
 
       createCheckpoint(65, 3, 'cp_6_1'),
+      createCheckpoint(95, 3, 'cp_6_2'),
 
       createSpike(69, -5, 4, 'gap_death_2'),
 
@@ -456,6 +466,7 @@ export const levels: LevelData[] = [
       createPotion(35, 6, 'sp_potion_1'),
       
       createCheckpoint(45, 5, 'cp_7_1'), 
+      createCheckpoint(110, 5, 'cp_7_2'),
 
       createSpawner(50, 4, 'METEOR', 100, 'sp_met_2'),
       createSpawner(50, 7, 'METEOR', 140, 'sp_met_2b'),

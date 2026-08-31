@@ -40,7 +40,35 @@ export const WINE_JUMP_MULTIPLIER = 1.2; // 酒后跳跃倍率
 export const PLAYER_WIDTH = 30;
 export const PLAYER_HEIGHT = 30;
 export const MAX_HEALTH = 3;    // 初始最大生命值
-export const REVIVE_COST = 1;   // 复活所需金币
+export const REVIVE_COST = 5;   // 复活所需金币（提高代价，鼓励使用存档点）
+export const REVIVE_COST_ESCALATION = 3; // 每次复活额外增加的金币消耗
+
+// --- 相机参数 ---
+export const CAMERA_LERP_NORMAL = 0.05;
+export const CAMERA_LERP_FAST = 0.12;    // 高速移动时更快跟随
+export const CAMERA_FAST_SPEED_THRESHOLD = 4;
+
+// --- 刷怪参数 ---
+export const DEFAULT_SPAWNER_MAX_ALIVE = 3;
+export const METEOR_SPAWNER_MAX_ALIVE = 2;
+
+// --- 画质档位 (LOW / MEDIUM / HIGH) ---
+export type GraphicsQuality = 'LOW' | 'MEDIUM' | 'HIGH';
+
+const GRAPHICS_BY_QUALITY: Record<
+  GraphicsQuality,
+  { lightingUpdateInterval: number; maxRainSporePerFrame: number; sunRaysEnabled: boolean }
+> = {
+  LOW: { lightingUpdateInterval: 3, maxRainSporePerFrame: 1, sunRaysEnabled: false },
+  MEDIUM: { lightingUpdateInterval: 2, maxRainSporePerFrame: 2, sunRaysEnabled: true },
+  HIGH: { lightingUpdateInterval: 1, maxRainSporePerFrame: 3, sunRaysEnabled: true },
+};
+
+export const GRAPHICS_QUALITY: GraphicsQuality = 'HIGH';
+const activeGraphics = GRAPHICS_BY_QUALITY[GRAPHICS_QUALITY];
+export const LIGHTING_UPDATE_INTERVAL = activeGraphics.lightingUpdateInterval;
+export const MAX_RAIN_SPORE_PER_FRAME = activeGraphics.maxRainSporePerFrame;
+export const SUN_RAYS_ENABLED = activeGraphics.sunRaysEnabled;
 
 // --- 引擎性能参数 ---
 export const MAX_SPAWNED_ENEMIES = 30;   // 同屏刷怪上限

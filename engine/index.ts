@@ -5,3 +5,5 @@ export * from './StatsBuffer';
 export * from './camera';
 export * from './entityLifecycle';
 export * from './spawnEnemy';
+export * from './input';
+export * from './spawner';

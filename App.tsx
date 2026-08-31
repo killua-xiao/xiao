@@ -13,7 +13,7 @@ import { GameCanvas } from './components/GameCanvas';
 import { GameStatus, GameState } from './types';
 import { levels } from './levels';
 import { Heart, Coins, Trophy, Skull, Star, Trees, Zap, Sparkles, Crown, Mountain, Home, Play, Map, Gamepad2, Move, Target, ArrowUpFromLine } from 'lucide-react';
-import { MAX_HEALTH, REVIVE_COST } from './constants';
+import { MAX_HEALTH, REVIVE_COST, REVIVE_COST_ESCALATION } from './constants';
 import { audio } from './audio';
 
 /**
@@ -26,6 +26,7 @@ const INITIAL_STATE: GameState = {
   lives: MAX_HEALTH, 
   maxLives: MAX_HEALTH, // New dynamic max health state
   coinsCollected: 0,
+  reviveCount: 0,
 };
 
 // --- CINEMATIC COMPONENT ---
@@ -317,11 +318,13 @@ const App: React.FC = () => {
   };
 
   const handleRevive = () => {
-    if (gameState.coinsCollected >= REVIVE_COST) {
+    const cost = REVIVE_COST + gameState.reviveCount * REVIVE_COST_ESCALATION;
+    if (gameState.coinsCollected >= cost) {
         setGameState(prev => ({
             ...prev,
             lives: prev.maxLives, 
-            coinsCollected: prev.coinsCollected - REVIVE_COST,
+            coinsCollected: prev.coinsCollected - cost,
+            reviveCount: prev.reviveCount + 1,
             status: GameStatus.PLAYING
         }));
     }
@@ -504,7 +507,9 @@ const App: React.FC = () => {
         )}
 
         {/* REVIVE PROMPT */}
-        {gameState.status === GameStatus.REVIVE_PROMPT && (
+        {gameState.status === GameStatus.REVIVE_PROMPT && (() => {
+          const reviveCost = REVIVE_COST + gameState.reviveCount * REVIVE_COST_ESCALATION;
+          return (
           <div className="absolute inset-0 bg-red-900/90 flex flex-col items-center justify-center text-center rounded-lg z-10">
              <Heart className="w-16 h-16 text-red-500 mb-4 animate-pulse" />
              <h2 className="pixel-font text-3xl text-white mb-4">你受伤了!</h2>
@@ -513,14 +518,14 @@ const App: React.FC = () => {
              <div className="flex flex-col gap-4 w-64">
                 <button 
                   onClick={handleRevive}
-                  disabled={gameState.coinsCollected < REVIVE_COST}
+                  disabled={gameState.coinsCollected < reviveCost}
                   className={`border-b-4 font-bold py-3 px-4 rounded-lg pixel-font transition-all ${
-                    gameState.coinsCollected >= REVIVE_COST 
+                    gameState.coinsCollected >= reviveCost 
                     ? 'bg-yellow-400 text-yellow-900 hover:bg-yellow-300 border-yellow-600 cursor-pointer' 
                     : 'bg-gray-600 text-gray-400 border-gray-700 cursor-not-allowed opacity-50'
                   }`}
                 >
-                  原地复活 ({REVIVE_COST} 金币)
+                  原地复活 ({reviveCost} 金币)
                 </button>
                 
                 <button 
@@ -531,11 +536,12 @@ const App: React.FC = () => {
                 </button>
              </div>
              
-             {gameState.coinsCollected < REVIVE_COST && (
+             {gameState.coinsCollected < reviveCost && (
                 <p className="text-red-300 text-xs mt-2">金币不足!</p>
              )}
           </div>
-        )}
+          );
+        })()}
 
         {/* GAME OVER */}
         {gameState.status === GameStatus.GAME_OVER && (

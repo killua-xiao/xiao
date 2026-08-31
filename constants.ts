@@ -4,6 +4,10 @@ export const CANVAS_WIDTH = 800;  // 画布宽度
 export const CANVAS_HEIGHT = 450; // 画布高度
 export const TILE_SIZE = 40;      // 瓦片/网格大小
 
+// Physics runs at a fixed 60 Hz so jump height / coyote time stay stable on high-refresh displays.
+export const FIXED_DT_MS = 1000 / 60;
+export const MAX_PHYSICS_STEPS = 5;
+
 // --- 物理与手感参数 (Physics & Feel) ---
 export const GRAVITY = 0.6;           // 重力加速度
 export const TERMINAL_VELOCITY = 12;  // 最大下落速度（防止穿模）

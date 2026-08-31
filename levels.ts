@@ -1,6 +1,7 @@
 
 import { LevelData, EntityType, EnemyVariant } from './types';
 import { CANVAS_HEIGHT, COLORS, TILE_SIZE } from './constants';
+import { createPlacedEnemy } from './game/enemies';
 
 const createPlatform = (x: number, y: number, w: number, h: number, id: string) => ({
   id, type: EntityType.PLATFORM, pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE }, size: { x: w * TILE_SIZE, y: h * TILE_SIZE }, vel: { x: 0, y: 0 }
@@ -84,45 +85,8 @@ const createFamily = (x: number, y: number, variant: EnemyVariant, id: string) =
     };
 };
 
-const createEnemy = (x: number, y: number, range: number, variant: EnemyVariant, id: string) => {
-  let width = 30;
-  let height = 30;
-  let speed = 2;
-  let health = 1;
-  let color = COLORS.enemy;
-
-  if (variant === 'TANK') { width = 50; height = 50; speed = 1; health = 3; color = COLORS.enemyTank; } 
-  else if (variant === 'FAST') { width = 25; height = 25; speed = 4; health = 1; color = COLORS.enemyFast; } 
-  else if (variant === 'BAT' || variant === 'BIRD') { width = 30; height = 20; speed = 3; health = 1; color = variant === 'BIRD' ? COLORS.enemyBird : COLORS.enemyBat; } 
-  else if (variant === 'SLIME') { width = 30; height = 20; speed = 1; health = 2; color = COLORS.enemySlime; } 
-  else if (variant === 'FISH') { width = 35; height = 25; speed = 2.5; health = 1; color = COLORS.enemyFish; } 
-  else if (variant === 'SKELETON') { width = 25; height = 45; speed = 2; health = 2; color = COLORS.enemySkeleton; } 
-  else if (variant === 'MUMMY') { width = 30; height = 45; speed = 1; health = 4; color = COLORS.enemyMummy; } 
-  else if (variant === 'ZOMBIE') { width = 30; height = 45; speed = 1.5; health = 3; color = COLORS.enemyZombie; } 
-  else if (variant === 'SPIDER') { width = 30; height = 25; speed = 2; health = 1; color = COLORS.enemySpider; } 
-  else if (variant === 'ALIEN') { width = 25; height = 35; speed = 2; health = 2; color = COLORS.enemyAlien; } 
-  else if (variant === 'UFO') { width = 40; height = 25; speed = 4; health = 2; color = COLORS.enemyUfo; } 
-  else if (variant === 'METEOR') { width = 30; height = 30; speed = 3; health = 1; color = COLORS.meteor; }
-
-  const enemy = {
-    id, 
-    type: EntityType.ENEMY, 
-    pos: { x: x * TILE_SIZE, y: CANVAS_HEIGHT - y * TILE_SIZE - height }, 
-    size: { x: width, y: height }, 
-    vel: { x: speed, y: 0 }, 
-    patrolStart: x * TILE_SIZE, 
-    patrolEnd: (x + range) * TILE_SIZE,
-    enemyVariant: variant,
-    health,
-    maxHealth: health,
-    color,
-    initialY: CANVAS_HEIGHT - y * TILE_SIZE - height
-  };
-
-  if (variant === 'SPIDER') { enemy.vel.x = 0; enemy.vel.y = speed; }
-  
-  return enemy;
-};
+const createEnemy = (x: number, y: number, range: number, variant: EnemyVariant, id: string) =>
+  createPlacedEnemy(x, y, range, variant, id);
 
 // 重构：创建连接的客运车厢 (Passanger Car)
 // 为了视觉连续性，车厢高度设为2格(80px)，y=2

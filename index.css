@@ -1,0 +1,10 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  background-color: #1a1a1a;
+  font-family: 'Nunito', sans-serif;
+}
+
+.pixel-font {
+  font-family: 'Press Start 2P', cursive;
+}

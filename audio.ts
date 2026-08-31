@@ -1,3 +1,14 @@
+import { WeatherType } from './types';
+
+export type BgmType = 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM';
+
+export function bgmTypeForWeather(weather: WeatherType): BgmType {
+  if (weather === 'CAVE') return 'CAVE';
+  if (weather === 'TOMB') return 'TOMB';
+  if (weather === 'SPACE') return 'SPACE';
+  if (weather === 'ARCTIC') return 'WARM';
+  return 'NORMAL';
+}
 
 /**
  * 音频控制器
@@ -123,7 +134,7 @@ class AudioController {
   }
 
   // --- 背景音乐 (BGM) 序列器 ---
-  startBGM(type: 'NORMAL' | 'CAVE' | 'TOMB' | 'SPACE' | 'CREDITS' | 'WARM' = 'NORMAL') {
+  startBGM(type: BgmType = 'NORMAL') {
     this.stopBGM();
     
     if (!this.ctx || this.isMuted) return;
